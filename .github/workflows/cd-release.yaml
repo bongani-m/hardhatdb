@@ -137,7 +137,9 @@ jobs:
         env:
           GHCR_IMAGE: ghcr.io/${{ github.repository }}
         run: |
-          image="$(printf '%s' "$GHCR_IMAGE" | tr '[:upper:]' '[:lower:]'):${{ inputs.version }}"
+          image="$(printf '%s' "$GHCR_IMAGE" | tr '[:upper:]' '[:lower:]')"
           echo "${{ github.token }}" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
-          docker tag "hardhatdb:${{ inputs.version }}" "$image"
-          docker push "$image"
+          docker tag "hardhatdb:${{ inputs.version }}" "${image}:${{ inputs.version }}"
+          docker tag "hardhatdb:${{ inputs.version }}" "${image}:latest"
+          docker push "${image}:${{ inputs.version }}"
+          docker push "${image}:latest"
