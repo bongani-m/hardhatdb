@@ -1,0 +1,25 @@
+<!DOCTYPE html>
+<html>
+  <head>
+    <title><%= content_for(:title) || "People" %></title>
+    <meta name="viewport" content="width=device-width,initial-scale=1">
+    <%= csrf_meta_tags %>
+    <%= csp_meta_tag %>
+    <%= stylesheet_link_tag :app %>
+  </head>
+
+  <body>
+    <header>
+      <a href="<%= people_path %>">People</a>
+      <span class="node">Served by <%= Current.node %></span>
+    </header>
+
+    <% if notice %>
+      <p class="notice"><%= notice %></p>
+    <% end %>
+
+    <main>
+      <%= yield %>
+    </main>
+  </body>
+</html>

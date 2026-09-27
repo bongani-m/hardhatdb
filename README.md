@@ -98,7 +98,21 @@ The same addresses, with host networking and a Cloud Firewall, are what a Digita
 
 Raft stays on `10.116.0.0/24` and is not published to the host. Each node keeps `/data` in its own volume.
 
-Example apps take every published address. A broken connection tries the next one:
+Each example app lives in its own directory and has a compose file that starts that app with this cluster. Create `certs` first. These stacks publish 3306–3308, so stop the root stack before starting one.
+
+```bash
+docker compose -f examples/webapp/compose.yaml up --build
+docker compose -f examples/rails/compose.yaml up --build
+docker compose -f examples/fastapi/compose.yaml up --build
+```
+
+| App | URL |
+|-----|-----|
+| [examples/webapp](examples/webapp) | http://localhost:8080 |
+| [examples/rails](examples/rails) | http://localhost:3000 |
+| [examples/fastapi](examples/fastapi) | http://localhost:8080/docs |
+
+Inside those stacks the apps dial `n1`, `n2`, and `n3` on port 3306 and trust `/certs/ca.crt`. From the host, the same clients take every published address. A broken connection tries the next one:
 
 ```bash
 MYSQL_ADDRS=127.0.0.1:3306,127.0.0.1:3307,127.0.0.1:3308

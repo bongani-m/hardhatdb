@@ -3,6 +3,7 @@
 /server
 /go/hardhatdb
 /go/performance/stress/stress
+/examples/webapp/examplewebapp
 
 # Local data and generated stress output
 /data/

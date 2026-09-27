@@ -1,0 +1,24 @@
+<%= form_with model: person do |form| %>
+  <% if person.errors.any? %>
+    <ul class="errors">
+      <% person.errors.full_messages.each do |message| %>
+        <li><%= message %></li>
+      <% end %>
+    </ul>
+  <% end %>
+
+  <div>
+    <%= form.label :name %>
+    <%= form.text_field :name, required: true %>
+  </div>
+  <div>
+    <%= form.label :email %>
+    <%= form.email_field :email, required: true %>
+  </div>
+  <div>
+    <%= form.label :phone_numbers_text, "Phone numbers" %>
+    <%= form.text_field :phone_numbers_text, placeholder: "555-0100, 555-0101" %>
+  </div>
+
+  <%= form.submit %>
+<% end %>

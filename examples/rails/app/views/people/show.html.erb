@@ -1,0 +1,16 @@
+<% content_for :title, @person.name %>
+
+<h1><%= @person.name %></h1>
+<dl>
+  <dt>Email</dt>
+  <dd><%= @person.email %></dd>
+  <dt>Phones</dt>
+  <dd><%= @person.phone_numbers_text.presence || "None" %></dd>
+  <dt>Created</dt>
+  <dd><%= @person.created_at %></dd>
+</dl>
+
+<p>
+  <%= link_to "Edit", edit_person_path(@person) %>
+  <%= button_to "Delete", @person, method: :delete, form: { onsubmit: "return confirm('Delete this person?')" } %>
+</p>

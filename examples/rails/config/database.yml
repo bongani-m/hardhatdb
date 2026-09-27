@@ -1,0 +1,47 @@
+# Every address accepts reads and writes. MYSQL_ADDRS is a comma-separated
+# host:port list. Leave it unset to use MYSQL_HOST and MYSQL_PORT.
+#
+#   MYSQL_ADDRS=127.0.0.1:3306,127.0.0.1:3307,127.0.0.1:3308
+#
+<%
+  raw = ENV.fetch("MYSQL_ADDRS", "")
+  mysql_addrs = raw.split(",").map(&:strip).reject(&:empty?)
+  if mysql_addrs.empty?
+    mysql_addrs = [ "#{ENV.fetch("MYSQL_HOST", "127.0.0.1")}:#{ENV.fetch("MYSQL_PORT", "3306")}" ]
+  end
+%>
+default: &default
+  adapter: mysql2
+  encoding: utf8mb4
+  connect_timeout: 2
+  connection_retries: 0
+  max_connections: <%= ENV.fetch("RAILS_MAX_THREADS") { 5 } %>
+  username: <%= ENV.fetch("MYSQL_USER", "root") %>
+  password: <%= ENV.fetch("MYSQL_PASSWORD", "dev-only-change-me") %>
+  database: <%= ENV.fetch("MYSQL_DB", "mydb") %>
+  <%# Default trusts the repo-root dev certificate. MYSQL_TLS_CA=off uses plaintext. %>
+  <% tls_ca = ENV.fetch("MYSQL_TLS_CA") { Rails.root.join("../../certs/ca.crt").to_s } %>
+  <% if tls_ca != "" && tls_ca != "off" %>
+  sslca: <%= tls_ca %>
+  ssl_mode: required
+  <% end %>
+  # The cluster already created mydb.mytable. Do not create, drop, or migrate it.
+  database_tasks: false
+
+<% %w[development test production].each do |env_name| %>
+<%= env_name %>:
+  primary:
+    <<: *default
+<% host, sep, port = mysql_addrs.fetch(0).rpartition(":") %>
+<% raise ArgumentError, "address must be host:port" if sep.empty? || host.empty? %>
+    host: <%= host %>
+    port: <%= port %>
+<% mysql_addrs.drop(1).each_with_index do |addr, index| %>
+<% host, sep, port = addr.rpartition(":") %>
+<% raise ArgumentError, "address must be host:port, got #{addr.inspect}" if sep.empty? || host.empty? %>
+  node_<%= index + 1 %>:
+    <<: *default
+    host: <%= host %>
+    port: <%= port %>
+<% end %>
+<% end %>

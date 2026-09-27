@@ -71,7 +71,21 @@ mysql --host=127.0.0.1 --port=3308 --user=root --password=dev-only-change-me \
 
 ## Clients
 
-Example apps take every published address. A broken connection tries the next one:
+Each example app has a compose file that starts the app with this cluster. Stop the root stack first. These stacks use the same MySQL ports.
+
+```bash
+docker compose -f examples/webapp/compose.yaml up --build
+docker compose -f examples/rails/compose.yaml up --build
+docker compose -f examples/fastapi/compose.yaml up --build
+```
+
+| App | URL |
+|-----|-----|
+| `examples/webapp` | http://localhost:8080 |
+| `examples/rails` | http://localhost:3000 |
+| `examples/fastapi` | http://localhost:8080/docs |
+
+From the host, the same clients take every published address. A broken connection tries the next one:
 
 ```bash
 MYSQL_ADDRS=127.0.0.1:3306,127.0.0.1:3307,127.0.0.1:3308

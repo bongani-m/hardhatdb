@@ -1,0 +1,54 @@
+body {
+  font-family: system-ui, sans-serif;
+  margin: 2rem auto;
+  max-width: 40rem;
+  line-height: 1.4;
+}
+
+header {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  margin-bottom: 1.5rem;
+}
+
+.node {
+  color: #555;
+  font-size: 0.875rem;
+}
+
+.notice {
+  background: #eef6ee;
+  padding: 0.5rem 0.75rem;
+}
+
+table {
+  width: 100%;
+  border-collapse: collapse;
+}
+
+th, td {
+  text-align: left;
+  padding: 0.4rem 0.5rem;
+  border-bottom: 1px solid #ddd;
+}
+
+label {
+  display: block;
+  margin-top: 0.75rem;
+}
+
+input[type="text"],
+input[type="email"] {
+  width: 100%;
+  box-sizing: border-box;
+  padding: 0.4rem;
+}
+
+form .errors {
+  color: #8a1f1f;
+}
+
+button, input[type="submit"] {
+  margin-top: 1rem;
+}

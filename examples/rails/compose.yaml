@@ -1,0 +1,33 @@
+# This app and the three-node HardhatDB cluster.
+#
+# Create certs at the repo root before the first up (see the repo README).
+# This stack publishes the same MySQL ports as the root compose file.
+# Stop that stack before starting this one.
+#
+#	docker compose up --build
+
+name: hardhatdb-rails
+
+include:
+  - path: ../../compose.yaml
+
+services:
+  rails:
+    build: .
+    image: hardhatdb-rails
+    restart: on-failure
+    depends_on:
+      - n1
+      - n2
+      - n3
+    networks:
+      - vpc
+    environment:
+      RAILS_ENV: development
+      MYSQL_ADDRS: n1:3306,n2:3306,n3:3306
+      MYSQL_PASSWORD: ${HARDHATDB_BOOTSTRAP_PASSWORD:-dev-only-change-me}
+      MYSQL_TLS_CA: /certs/ca.crt
+    ports:
+      - "3000:3000"
+    volumes:
+      - ../../certs:/certs:ro
