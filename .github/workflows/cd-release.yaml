@@ -1,0 +1,141 @@
+name: Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Semver tag, such as v0.1.0
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+jobs:
+  binaries:
+    name: ${{ matrix.goos }}-${{ matrix.goarch }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            goos: linux
+            goarch: amd64
+          - os: ubuntu-24.04-arm
+            goos: linux
+            goarch: arm64
+          - os: macos-latest
+            goos: darwin
+            goarch: arm64
+          - os: macos-15-intel
+            goos: darwin
+            goarch: amd64
+    steps:
+      - name: Check out persist
+        uses: actions/checkout@v4
+        with:
+          path: persist
+
+      - name: Check out go-mysql-server
+        uses: actions/checkout@v4
+        with:
+          repository: bongani-m/go-mysql-server
+          path: go-mysql-server
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: "1.26.2"
+
+      - name: Install ICU
+        run: |
+          if [ "${{ matrix.goos }}" = "linux" ]; then
+            sudo apt-get update
+            sudo apt-get install -y --no-install-recommends g++ libicu-dev
+          else
+            brew install icu4c
+            echo "CGO_CPPFLAGS=-I$(brew --prefix icu4c)/include" >> "$GITHUB_ENV"
+            echo "CGO_LDFLAGS=-L$(brew --prefix icu4c)/lib" >> "$GITHUB_ENV"
+          fi
+
+      - name: Check version
+        run: |
+          if ! [[ "${{ inputs.version }}" =~ ^v[0-9]+\.[0-9]+\.[0-9]+([.-][0-9A-Za-z.]+)?$ ]]; then
+            echo "version must look like v0.1.0"
+            exit 1
+          fi
+
+      - name: Build
+        working-directory: persist/go
+        env:
+          CGO_ENABLED: "1"
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
+        run: |
+          go build -o "persist-${GOOS}-${GOARCH}" \
+            -ldflags "-X github.com/bongani-m/persist/go/cmd/persist/version.Version=${{ inputs.version }}" \
+            ./cmd/persist
+
+      - name: Upload binary
+        uses: actions/upload-artifact@v4
+        with:
+          name: persist-${{ matrix.goos }}-${{ matrix.goarch }}
+          path: persist/go/persist-${{ matrix.goos }}-${{ matrix.goarch }}
+
+  release:
+    name: GitHub release
+    needs: binaries
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download binaries
+        uses: actions/download-artifact@v4
+        with:
+          pattern: persist-*
+          merge-multiple: true
+          path: dist
+
+      - name: Publish release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "${{ inputs.version }}" dist/persist-* \
+            --repo "${{ github.repository }}" \
+            --title "${{ inputs.version }}" \
+            --notes "persist ${{ inputs.version }}"
+
+  image:
+    name: Docker image
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out persist
+        uses: actions/checkout@v4
+        with:
+          path: persist
+
+      - name: Check out go-mysql-server
+        uses: actions/checkout@v4
+        with:
+          repository: bongani-m/go-mysql-server
+          path: go-mysql-server
+
+      - name: Build image
+        working-directory: persist
+        run: |
+          docker build -f docker/Dockerfile \
+            --build-context gms=../go-mysql-server \
+            -t "gms-persist:${{ inputs.version }}" .
+
+      - name: Push image
+        env:
+          REGISTRY: ${{ secrets.REGISTRY }}
+          REGISTRY_USERNAME: ${{ secrets.REGISTRY_USERNAME }}
+          REGISTRY_TOKEN: ${{ secrets.REGISTRY_TOKEN }}
+        run: |
+          if [ -z "$REGISTRY_TOKEN" ]; then
+            echo "REGISTRY_TOKEN is unset; the image was built and not pushed"
+            exit 0
+          fi
+          echo "$REGISTRY_TOKEN" | docker login "$REGISTRY" -u "$REGISTRY_USERNAME" --password-stdin
+          docker tag "gms-persist:${{ inputs.version }}" "$REGISTRY/gms-persist:${{ inputs.version }}"
+          docker push "$REGISTRY/gms-persist:${{ inputs.version }}"

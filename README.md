@@ -2,14 +2,14 @@
 
 A MySQL server backed by one Badger directory. Rows are still there after the process exits.
 
-Run these commands from this repo. The example clients take `MYSQL_ADDRS` and send reads and writes to any of those nodes.
+Run the server from the `go` directory. The example clients take `MYSQL_ADDRS` and send reads and writes to any of those nodes.
 
 ## One process
 
 Cluster mode stays off unless `GMS_RAFT_ADDR` is set.
 
 ```bash
-GMS_SEED_EXAMPLE=1 GMS_BOOTSTRAP_PASSWORD=secret go run ./cmd/server
+GMS_SEED_EXAMPLE=1 GMS_BOOTSTRAP_PASSWORD=secret go run ./cmd/persist sql-server
 mysql --host=127.0.0.1 --port=3306 --user=root --password=secret mydb --execute="SELECT name, email FROM mytable;"
 ```
 
@@ -24,7 +24,7 @@ Building needs ICU headers. On this machine:
 ```bash
 CGO_CPPFLAGS="-I/opt/homebrew/opt/icu4c/include" \
 CGO_LDFLAGS="-L/opt/homebrew/opt/icu4c/lib" \
-go run ./cmd/server
+go run ./cmd/persist sql-server
 ```
 
 ## One container
@@ -106,26 +106,26 @@ The example clients trust `certs/ca.crt` unless `MYSQL_TLS_CA` is set. `MYSQL_TL
 
 ## Stress test
 
-`stress/run.sh` starts one target in Docker, loads the same workload, and writes `stress/summary.md`. Run it from this repo. Docker has to be running. The first start creates `stress/certs` with `openssl`. These ports stay off 3306–3308, so the stress stack can run beside the example cluster.
+`go/performance/stress/run.sh` starts one target in Docker, loads the same workload, and writes `go/performance/stress/summary.md`. Run it from this repo. Docker has to be running. The first start creates `go/performance/stress/certs` with `openssl`. These ports stay off 3306–3308, so the stress stack can run beside the example cluster.
 
 ```bash
-stress/run.sh single
-stress/run.sh cluster
-stress/run.sh mysql
-stress/run.sh tidb
-stress/run.sh ranged
-stress/run.sh compare
-stress/run.sh failover
+go/performance/stress/run.sh single
+go/performance/stress/run.sh cluster
+go/performance/stress/run.sh mysql
+go/performance/stress/run.sh tidb
+go/performance/stress/run.sh ranged
+go/performance/stress/run.sh compare
+go/performance/stress/run.sh failover
 ```
 
 `failover` is not part of `compare`. It runs the cluster for 60 seconds with writes aimed at a follower, kills the leader, waits for a new leader, and starts the killed node again. The report splits errors during that election from errors after the new leader is serving. A row inserted before the kill must be readable on every node afterward.
 
-`compare` runs single, cluster, MySQL, TiDB, and the ranged cluster one after another so they do not share the CPU. Each run also prints a text report and stores JSON, CPU samples, and disk usage under `stress/results/`.
+`compare` runs single, cluster, MySQL, TiDB, and the ranged cluster one after another so they do not share the CPU. Each run also prints a text report and stores JSON, CPU samples, and disk usage under `go/performance/stress/results/`.
 
 Flags after `--` go to the client:
 
 ```bash
-stress/run.sh cluster -- -duration 60s -concurrency 32 -seed 20000
+go/performance/stress/run.sh cluster -- -duration 60s -concurrency 32 -seed 20000
 ```
 
 | Flag | Default | Role |
@@ -152,13 +152,13 @@ The account is `root` / `stress`, database `stress`. Every target requires TLS. 
 `KEEP=1` leaves the containers up after the run:
 
 ```bash
-KEEP=1 stress/run.sh cluster
+KEEP=1 go/performance/stress/run.sh cluster
 ```
 
 Wipe stored data with:
 
 ```bash
-docker compose -f stress/compose.yaml -p gms-stress down -v
+docker compose -f go/performance/stress/compose.yaml -p gms-stress down -v
 ```
 
 ## Operations

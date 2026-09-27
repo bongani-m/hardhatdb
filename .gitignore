@@ -1,16 +1,16 @@
 # Compiled binaries
 /persist
 /server
-/cmd/server/server
-/stress/stress
+/go/persist
+/go/performance/stress/stress
 
 # Local data and generated stress output
 /data/
 /certs/
-/stress/certs/
-/stress/results/
-/stress/last-compare.txt
-/stress/summary.md
+/go/performance/stress/certs/
+/go/performance/stress/results/
+/go/performance/stress/last-compare.txt
+/go/performance/stress/summary.md
 
 .env
 .DS_Store

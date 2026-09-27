@@ -13,7 +13,7 @@ name: gms-persist
 
 x-build: &build
   context: .
-  dockerfile: Dockerfile
+  dockerfile: docker/Dockerfile
   additional_contexts:
     gms: ../go-mysql-server
 
