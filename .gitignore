@@ -1,0 +1,16 @@
+# Compiled binaries
+/persist
+/server
+/cmd/server/server
+/stress/stress
+
+# Local data and generated stress output
+/data/
+/certs/
+/stress/certs/
+/stress/results/
+/stress/last-compare.txt
+/stress/summary.md
+
+.env
+.DS_Store

@@ -1,0 +1,7 @@
+# Client TLS uses the same certificate as the other stress targets.
+# Client certificates stay optional so setup can connect in plaintext
+# on the Docker network.
+
+[security]
+ssl-cert = "/certs/server.crt"
+ssl-key = "/certs/server.key"

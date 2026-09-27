@@ -1,0 +1,108 @@
+# Three-node Raft cluster for the persistent MySQL server.
+#
+# Create certs before the first up (see README.md). Without ca.crt
+# each node exits with: open /certs/ca.crt: no such file or directory
+#
+#	docker compose up --build
+#
+# Same address plan as droplets/README.md. Each node binds Raft and MySQL to
+# its address on the vpc network. MySQL is published on the host. Raft is not
+# published. n1 bootstraps the group. Writes succeed on the leader.
+
+name: gms-persist
+
+x-build: &build
+  context: .
+  dockerfile: Dockerfile
+  additional_contexts:
+    gms: ../go-mysql-server
+
+x-env: &env
+  GMS_SERVER_UUID: 11111111-1111-1111-1111-111111111111
+  GMS_RAFT_PEERS: n1=10.116.0.2:7001,n2=10.116.0.3:7001,n3=10.116.0.4:7001
+  GMS_RAFT_DIR: /data/raft
+  GMS_DATA: /data/gms
+  GMS_BOOTSTRAP_PASSWORD: ${GMS_BOOTSTRAP_PASSWORD:-dev-only-change-me}
+  GMS_SEED_EXAMPLE: "1"
+  GMS_TLS_CERT: /certs/server.crt
+  GMS_TLS_KEY: /certs/server.key
+  GMS_RAFT_TLS_CERT: /certs/server.crt
+  GMS_RAFT_TLS_KEY: /certs/server.key
+  GMS_RAFT_TLS_CA: /certs/ca.crt
+
+services:
+  n1:
+    build: *build
+    image: gms-persist
+    hostname: n1
+    restart: unless-stopped
+    depends_on:
+      - n2
+      - n3
+    networks:
+      vpc:
+        ipv4_address: 10.116.0.2
+    environment:
+      <<: *env
+      GMS_NODE_ID: n1
+      GMS_RAFT_ADDR: 10.116.0.2:7001
+      GMS_RAFT_ADVERTISE: 10.116.0.2:7001
+      GMS_RAFT_BOOTSTRAP: "1"
+      GMS_MYSQL_HOST: 10.116.0.2
+    ports:
+      - "3306:3306"
+    volumes:
+      - n1:/data
+      - ./certs:/certs:ro
+
+  n2:
+    build: *build
+    image: gms-persist
+    hostname: n2
+    restart: unless-stopped
+    networks:
+      vpc:
+        ipv4_address: 10.116.0.3
+    environment:
+      <<: *env
+      GMS_NODE_ID: n2
+      GMS_RAFT_ADDR: 10.116.0.3:7001
+      GMS_RAFT_ADVERTISE: 10.116.0.3:7001
+      GMS_MYSQL_HOST: 10.116.0.3
+    ports:
+      - "3307:3306"
+    volumes:
+      - n2:/data
+      - ./certs:/certs:ro
+
+  n3:
+    build: *build
+    image: gms-persist
+    hostname: n3
+    restart: unless-stopped
+    networks:
+      vpc:
+        ipv4_address: 10.116.0.4
+    environment:
+      <<: *env
+      GMS_NODE_ID: n3
+      GMS_RAFT_ADDR: 10.116.0.4:7001
+      GMS_RAFT_ADVERTISE: 10.116.0.4:7001
+      GMS_MYSQL_HOST: 10.116.0.4
+    ports:
+      - "3308:3306"
+    volumes:
+      - n3:/data
+      - ./certs:/certs:ro
+
+networks:
+  vpc:
+    ipam:
+      config:
+        - subnet: 10.116.0.0/24
+          gateway: 10.116.0.1
+
+volumes:
+  n1:
+  n2:
+  n3:

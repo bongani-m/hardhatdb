@@ -1,0 +1,8 @@
+# Three stores share one Docker VM. Cap each store so the block cache
+# does not take 45% of the machine. Raft Engine stays at its default,
+# which fsyncs the raft log.
+
+memory-usage-limit = "1GiB"
+
+[storage.block-cache]
+capacity = "256MiB"
