@@ -21,19 +21,23 @@ One row:
 | `commit_index` | Raft commit index |
 | `applied_index` | Index applied on this node |
 | `lag` | `commit_index - applied_index` on this node |
+| `suffrage` | `voter`, `nonvoter`, or `staging`. Empty when this process is standalone |
 
-The statement runs locally. On a follower, `lag` is how far that node is behind the commit index.
+The statement runs locally. On a follower, `lag` is how far that node is behind the commit index. `suffrage` is this process's membership.
 
 ## Membership
 
-Both statements are leader operations. A follower forwards them. They fail when the process is not replicating.
+These statements are leader operations. A follower forwards them. They fail when the process is not replicating.
 
 ```sql
 RAFT ADD VOTER 'n4' '10.116.0.5:7001';
+RAFT ADD NONVOTER 'n4' '10.116.0.5:7001';
 RAFT REMOVE SERVER 'n4';
 ```
 
-The voter id is the Raft server id (`HARDHATDB_NODE_ID`). The address is the Raft advertise address, `host:port`.
+The id is the Raft server id (`HARDHATDB_NODE_ID`). The address is the Raft advertise address, `host:port`. A nonvoter copies the log and serves reads. It does not vote, so the quorum stays the voters. A write sent to it is forwarded to the leader. A read on another connection can lag. `RAFT REMOVE SERVER` drops a voter or a nonvoter.
+
+Writes still commit on one leader. A faster machine for the voters raises that ceiling. A table whose writes do not fit that leader is placed with `SHARD TABLE` on a second set of peers. A size-based split stays on the current hosts and does not add a machine.
 
 ## Binlog
 

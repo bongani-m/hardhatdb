@@ -23,9 +23,10 @@ These statements are not part of the MySQL grammar. The server recognizes them b
 
 | Statement | Where it runs |
 |-----------|----------------|
-| `SHOW RAFT STATUS` | Locally, including on a follower |
+| `SHOW RAFT STATUS` | Locally, including on a follower. Includes `suffrage` |
 | `RAFT ADD VOTER` | Leader. A follower forwards it |
-| `RAFT REMOVE SERVER` | Leader. A follower forwards it |
+| `RAFT ADD NONVOTER` | Leader. A follower forwards it. The new member copies the log and does not vote |
+| `RAFT REMOVE SERVER` | Leader. A follower forwards it. Drops a voter or a nonvoter |
 | `SHARD TABLE ... RANGE` | Meta group, when `HARDHATDB_META_ADDR` is set |
 
 ## What does not follow MySQL

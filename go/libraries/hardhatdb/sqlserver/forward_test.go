@@ -77,9 +77,13 @@ func TestFollowerForwardsWrites(t *testing.T) {
 }
 
 type forwardNode struct {
-	store *hardhatdb.Store
-	addr  string
-	srv   *server.Server
+	store    *hardhatdb.Store
+	addr     string
+	srv      *server.Server
+	trans    *raft.InmemTransport
+	raftAddr raft.ServerAddress
+	dir      *cluster.ForwardDir
+	closed   bool
 }
 
 func startForwardCluster(t *testing.T, n int) []*forwardNode {
@@ -103,50 +107,7 @@ func startForwardCluster(t *testing.T, n int) []*forwardNode {
 	nodes := make([]*forwardNode, n)
 	for i := 0; i < n; i++ {
 		id := fmt.Sprintf("node-%d", i)
-		gate := &leadershipGate{}
-		store, err := openCluster(filepath.Join(t.TempDir(), id, "hardhatdb"), cluster.ClusterOptions{
-			ID:           id,
-			Advertise:    string(addrs[i]),
-			RaftDir:      filepath.Join(t.TempDir(), id, "raft"),
-			Bootstrap:    i == 0,
-			ServerUUID:   "11111111-1111-1111-1111-111111111111",
-			Transport:    trans[i],
-			Config:       fastRaft(),
-			ApplyTimeout: 10 * time.Second,
-			ForwardAddr:  "127.0.0.1:0",
-			ForwardDir:   dir,
-			OnLeadership: func(isLeader bool) {
-				gate.set(isLeader)
-			},
-		})
-		require.NoError(t, err)
-		engine := sqle.NewDefault(store)
-		gate.mu.Lock()
-		gate.engine = engine
-		engine.ReadOnly.Store(!store.IsLeader())
-		gate.mu.Unlock()
-		store.SetForwardExec(newLeaderExec(engine, store).Exec)
-		ln, err := net.Listen("tcp", "127.0.0.1:0")
-		require.NoError(t, err)
-		srv, err := server.NewServerWithHandler(server.Config{
-			Protocol: "tcp",
-			Address:  ln.Addr().String(),
-			Listener: ln,
-		}, engine, gmsql.NewContext, hardhatdb.NewSessionBuilder(store), nil, func(h vtmysql.Handler) (vtmysql.Handler, error) {
-			inner, ok := h.(*server.Handler)
-			if !ok {
-				return nil, fmt.Errorf("unexpected handler %T", h)
-			}
-			return newForwardHandler(inner, store), nil
-		})
-		require.NoError(t, err)
-		go func() { _ = srv.Start() }()
-		node := &forwardNode{store: store, addr: ln.Addr().String(), srv: srv}
-		nodes[i] = node
-		t.Cleanup(func() {
-			_ = node.srv.Close()
-			_ = node.store.Close()
-		})
+		nodes[i] = listenForwardNode(t, id, trans[i], addrs[i], dir, i == 0)
 	}
 	require.NoError(t, nodes[0].store.WaitReady(10*time.Second))
 	for i := 1; i < n; i++ {
@@ -154,6 +115,79 @@ func startForwardCluster(t *testing.T, n int) []*forwardNode {
 		waitStoreCaughtUp(t, nodes[0].store, nodes[i].store)
 	}
 	return nodes
+}
+
+func listenForwardNode(t *testing.T, id string, trans *raft.InmemTransport, raftAddr raft.ServerAddress, dir *cluster.ForwardDir, bootstrap bool) *forwardNode {
+	t.Helper()
+	gate := &leadershipGate{}
+	store, err := openCluster(filepath.Join(t.TempDir(), id, "hardhatdb"), cluster.ClusterOptions{
+		ID:           id,
+		Advertise:    string(raftAddr),
+		RaftDir:      filepath.Join(t.TempDir(), id, "raft"),
+		Bootstrap:    bootstrap,
+		ServerUUID:   "11111111-1111-1111-1111-111111111111",
+		Transport:    trans,
+		Config:       fastRaft(),
+		ApplyTimeout: 10 * time.Second,
+		ForwardAddr:  "127.0.0.1:0",
+		ForwardDir:   dir,
+		OnLeadership: func(isLeader bool) {
+			gate.set(isLeader)
+		},
+	})
+	require.NoError(t, err)
+	engine := sqle.NewDefault(store)
+	gate.mu.Lock()
+	gate.engine = engine
+	engine.ReadOnly.Store(!store.IsLeader())
+	gate.mu.Unlock()
+	store.SetForwardExec(newLeaderExec(engine, store).Exec)
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	require.NoError(t, err)
+	srv, err := server.NewServerWithHandler(server.Config{
+		Protocol: "tcp",
+		Address:  ln.Addr().String(),
+		Listener: ln,
+	}, engine, gmsql.NewContext, hardhatdb.NewSessionBuilder(store), nil, func(h vtmysql.Handler) (vtmysql.Handler, error) {
+		inner, ok := h.(*server.Handler)
+		if !ok {
+			return nil, fmt.Errorf("unexpected handler %T", h)
+		}
+		return newForwardHandler(inner, store), nil
+	})
+	require.NoError(t, err)
+	go func() { _ = srv.Start() }()
+	node := &forwardNode{
+		store: store, addr: ln.Addr().String(), srv: srv,
+		trans: trans, raftAddr: raftAddr, dir: dir,
+	}
+	t.Cleanup(func() {
+		if node.closed {
+			return
+		}
+		_ = node.srv.Close()
+		_ = node.store.Close()
+	})
+	return node
+}
+
+// startExtraForwardNode starts a process that is connected to the group and
+// is not a member yet. The caller adds it with RAFT ADD NONVOTER.
+func startExtraForwardNode(t *testing.T, peers []*forwardNode, id string) *forwardNode {
+	t.Helper()
+	addr, tr := raft.NewInmemTransportWithTimeout(raft.ServerAddress(id), 2*time.Second)
+	for _, peer := range peers {
+		peer.trans.Connect(addr, tr)
+		tr.Connect(peer.raftAddr, peer.trans)
+	}
+	return listenForwardNode(t, id, tr, addr, peers[0].dir, false)
+}
+
+func stopForwardNode(t *testing.T, node *forwardNode) {
+	t.Helper()
+	node.closed = true
+	require.NoError(t, node.srv.Close())
+	require.NoError(t, node.store.Close())
 }
 
 func fastRaft() *raft.Config {
@@ -265,10 +299,32 @@ func TestRaftStatusAndRemove(t *testing.T) {
 	conn := openMySQL(t, follower.addr)
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	var role, leaderAddr, commit, applied, lag string
-	require.NoError(t, conn.QueryRowContext(ctx, "SHOW RAFT STATUS").Scan(&role, &leaderAddr, &commit, &applied, &lag))
+	var role, leaderAddr, commit, applied, lag, suffrage string
+	require.NoError(t, conn.QueryRowContext(ctx, "SHOW RAFT STATUS").Scan(&role, &leaderAddr, &commit, &applied, &lag, &suffrage))
 	require.Equal(t, "follower", role)
+	require.Equal(t, "voter", suffrage)
 	require.NotEmpty(t, leaderAddr)
+
+	extra := startExtraForwardNode(t, nodes, "node-3")
+	execSQL(t, conn, "RAFT ADD NONVOTER '"+extra.store.NodeID()+"' '"+string(extra.raftAddr)+"'")
+	waitStoreCaughtUp(t, leader.store, extra.store)
+	extraConn := openMySQL(t, extra.addr)
+	extraCtx, extraCancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer extraCancel()
+	var extraRole, extraLeader, extraCommit, extraApplied, extraLag, extraSuffrage string
+	require.NoError(t, extraConn.QueryRowContext(extraCtx, "SHOW RAFT STATUS").Scan(&extraRole, &extraLeader, &extraCommit, &extraApplied, &extraLag, &extraSuffrage))
+	require.Equal(t, "follower", extraRole)
+	require.Equal(t, "nonvoter", extraSuffrage)
+
+	execSQL(t, openMySQL(t, leader.addr), "CREATE DATABASE IF NOT EXISTS mydb")
+	execSQL(t, openMySQL(t, leader.addr), "CREATE TABLE IF NOT EXISTS mydb.kept (id bigint primary key, name varchar(32))")
+	execSQL(t, openMySQL(t, leader.addr), "INSERT INTO mydb.kept VALUES (7, 'ada')")
+	waitStoreCaughtUp(t, leader.store, extra.store)
+	require.Equal(t, "ada", queryKeptID(t, extraConn, 7))
+
+	stopForwardNode(t, extra)
+	execSQL(t, openMySQL(t, leader.addr), "INSERT INTO mydb.kept VALUES (8, 'bea')")
+	execSQL(t, conn, "RAFT REMOVE SERVER '"+extra.store.NodeID()+"'")
 
 	execSQL(t, conn, "RAFT REMOVE SERVER '"+other.store.NodeID()+"'")
 	execSQL(t, openMySQL(t, leader.addr), "CREATE DATABASE IF NOT EXISTS mydb")
@@ -280,10 +336,15 @@ func TestRaftStatusAndRemove(t *testing.T) {
 
 func queryKept(t *testing.T, conn *sql.Conn) string {
 	t.Helper()
+	return queryKeptID(t, conn, 1)
+}
+
+func queryKeptID(t *testing.T, conn *sql.Conn, id int) string {
+	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	var name string
-	err := conn.QueryRowContext(ctx, "SELECT name FROM mydb.kept WHERE id = 1").Scan(&name)
+	err := conn.QueryRowContext(ctx, "SELECT name FROM mydb.kept WHERE id = ?", id).Scan(&name)
 	require.NoError(t, err)
 	return name
 }

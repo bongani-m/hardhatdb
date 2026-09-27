@@ -12,10 +12,10 @@ Cluster mode stays off unless `HARDHATDB_RAFT_ADDR` is set.
 
 ```bash
 HARDHATDB_SEED_EXAMPLE=1 HARDHATDB_BOOTSTRAP_PASSWORD=secret go run ./cmd/hardhatdb sql-server
-mysql --host=127.0.0.1 --port=3306 --user=root --password=secret mydb --execute="SELECT name, email FROM mytable;"
+mysql --host=127.0.0.1 --port=3306 --user=root --password=secret mydb --execute="SELECT name, email FROM accounts;"
 ```
 
-`HARDHATDB_SEED_EXAMPLE=1` creates `mydb.mytable` on first boot. Leave it unset for an empty data directory.
+`HARDHATDB_SEED_EXAMPLE=1` creates `mydb.accounts` and `mydb.notes` when those tables are missing. `accounts.id` is the shard column. Leave it unset for an empty data directory. A volume created for the previous example still has `mydb.mytable`. Remove it before the first start on this schema: `docker compose down -v`.
 
 The first boot creates one `mysql_native_password` account. `HARDHATDB_BOOTSTRAP_PASSWORD` is required then and is not saved for later boots; the account lives in the data directory. The default user is `root` and the default host is `%`. A follower that has not received the account yet rejects every login.
 
@@ -45,27 +45,10 @@ docker run --rm -p 3306:3306 -v hardhatdb-data:/data \
 
 ## Local testing
 
-Create the test CA and server certificate before the first `up`. They are not committed. Compose mounts `certs` at `/certs`, and Raft reads `ca.crt`, `server.crt`, and `server.key` from there. Without `ca.crt` each node logs `open /certs/ca.crt: no such file or directory` and exits, and Compose restarts it. The server certificate is signed by that CA, carries `serverAuth` and `clientAuth`, and names the addresses clients dial: `127.0.0.1` from the host, the node names, and the private addresses Compose assigns. A stack that is already restarting picks the files up after `docker compose restart`.
+Create the test CA and server certificate before the first `up`. They are not committed. `examples/gencerts.sh` writes them to `examples/certs`. Compose mounts that directory at `/certs`, and Raft reads `ca.crt`, `server.crt`, and `server.key` from there. Without `ca.crt` each node logs `open /certs/ca.crt: no such file or directory` and exits, and Compose restarts it. The server certificate is signed by that CA, carries `serverAuth` and `clientAuth`, and names the addresses clients dial: `127.0.0.1` from the host, the node names, and the private addresses Compose assigns. A stack that is already restarting picks the files up after `docker compose restart`.
 
 ```bash
-mkdir -p certs
-openssl req -x509 -newkey rsa:2048 -nodes \
-  -keyout certs/ca.key \
-  -out certs/ca.crt \
-  -days 365 \
-  -subj "/CN=hardhatdb-ca" \
-  -addext "basicConstraints=critical,CA:TRUE" \
-  -addext "keyUsage=critical,keyCertSign,cRLSign"
-openssl req -newkey rsa:2048 -nodes \
-  -keyout certs/server.key \
-  -out certs/server.csr \
-  -subj "/CN=hardhatdb" \
-  -addext "subjectAltName=DNS:localhost,DNS:n1,DNS:n2,DNS:n3,IP:127.0.0.1,IP:10.116.0.2,IP:10.116.0.3,IP:10.116.0.4" \
-  -addext "extendedKeyUsage=serverAuth,clientAuth"
-openssl x509 -req -in certs/server.csr \
-  -CA certs/ca.crt -CAkey certs/ca.key -CAcreateserial \
-  -out certs/server.crt -days 365 \
-  -copy_extensions copy
+examples/gencerts.sh
 docker compose up --build
 ```
 
@@ -79,11 +62,11 @@ Check the leader, then a follower:
 
 ```bash
 mysql --host=127.0.0.1 --port=3306 --user=root --password=dev-only-change-me \
-  --ssl-mode=REQUIRED --ssl-ca=certs/ca.crt \
-  mydb --execute="SELECT name, email FROM mytable;"
+  --ssl-mode=REQUIRED --ssl-ca=examples/certs/ca.crt \
+  mydb --execute="SELECT name, email FROM accounts;"
 mysql --host=127.0.0.1 --port=3307 --user=root --password=dev-only-change-me \
-  --ssl-mode=REQUIRED --ssl-ca=certs/ca.crt \
-  mydb --execute="SELECT name, email FROM mytable;"
+  --ssl-mode=REQUIRED --ssl-ca=examples/certs/ca.crt \
+  mydb --execute="SELECT name, email FROM accounts;"
 ```
 
 ## Three nodes
@@ -98,7 +81,13 @@ The same addresses, with host networking and a Cloud Firewall, are what a Digita
 
 Raft stays on `10.116.0.0/24` and is not published to the host. Each node keeps `/data` in its own volume.
 
-Each example app lives in its own directory and has a compose file that starts that app with this cluster. Create `certs` first. These stacks publish 3306–3308, so stop the root stack before starting one.
+Each example app lives in its own directory and has a compose file that starts that app with this cluster. Run `examples/gencerts.sh` first. These stacks publish 3306–3308, so stop the root stack before starting one. One file starts the cluster and all three apps:
+
+```bash
+docker compose -f examples/compose.yaml up --build
+```
+
+Or start one language:
 
 ```bash
 docker compose -f examples/webapp/compose.yaml up --build
@@ -110,7 +99,9 @@ docker compose -f examples/fastapi/compose.yaml up --build
 |-----|-----|
 | [examples/webapp](examples/webapp) | http://localhost:8080 |
 | [examples/rails](examples/rails) | http://localhost:3000 |
-| [examples/fastapi](examples/fastapi) | http://localhost:8080/docs |
+| [examples/fastapi](examples/fastapi) | http://localhost:8000/docs |
+
+The page on port 8080 is the cluster view: each node's `SHOW RAFT STATUS`, a choice of which address receives the next write, and whether another node can see that row yet.
 
 Inside those stacks the apps dial `n1`, `n2`, and `n3` on port 3306 and trust `/certs/ca.crt`. From the host, the same clients take every published address. A broken connection tries the next one:
 
@@ -118,7 +109,14 @@ Inside those stacks the apps dial `n1`, `n2`, and `n3` on port 3306 and trust `/
 MYSQL_ADDRS=127.0.0.1:3306,127.0.0.1:3307,127.0.0.1:3308
 ```
 
-The example clients trust `certs/ca.crt` unless `MYSQL_TLS_CA` is set. `MYSQL_TLS_CA=off` connects without TLS. Leave `MYSQL_ADDRS` unset to use only `localhost:3306`.
+The example clients trust `examples/certs/ca.crt` unless `MYSQL_TLS_CA` is set. `MYSQL_TLS_CA=off` connects without TLS. Leave `MYSQL_ADDRS` unset to use only `localhost:3306`.
+
+A second stack places the same tables on two Raft groups. `g1`–`g3` hold `accounts.id` below 3. `g4`–`g6` hold ids from 3 up. `g1`–`g3` also vote in the meta group that stores those ranges. MySQL is on host ports 3416–3421. The apps are on 8081, 8001, and 3001, so this stack can run beside the single group. A new account has to include `id`.
+
+```bash
+docker compose -f examples/compose.sharded.yaml up --build
+examples/placeshards.sh
+```
 
 ## Stress test
 
@@ -181,14 +179,17 @@ docker compose -f go/performance/stress/compose.yaml -p hardhatdb-stress down -v
 
 `SIGTERM` and `SIGINT` stop the MySQL listener, wait up to `HARDHATDB_SHUTDOWN_TIMEOUT` (default 15s) for sessions to finish, then shut Raft down and sync Badger.
 
-`SHOW RAFT STATUS` returns one row: `role`, `leader`, `commit_index`, `applied_index`, and `lag`. A standalone process reports `standalone`. On a follower the statement runs locally, so `lag` is how far that node is behind the commit index. A read on another connection can still see an older copy.
+`SHOW RAFT STATUS` returns one row: `role`, `leader`, `commit_index`, `applied_index`, `lag`, and `suffrage`. A standalone process reports `standalone` and an empty `suffrage`. On a follower the statement runs locally, so `lag` is how far that node is behind the commit index. A read on another connection can still see an older copy. `suffrage` is `voter`, `nonvoter`, or `staging`.
 
 Membership changes are leader statements. A follower forwards them:
 
 ```sql
 RAFT ADD VOTER 'n4' '10.116.0.5:7001';
+RAFT ADD NONVOTER 'n4' '10.116.0.5:7001';
 RAFT REMOVE SERVER 'n4';
 ```
+
+A nonvoter copies the log and serves reads. It does not vote, so quorum stays the voters. A write sent to it is forwarded to the leader. `RAFT REMOVE SERVER` drops a voter or a nonvoter. More write throughput comes from a faster machine for the voters. A table whose writes do not fit that leader is placed with `SHARD TABLE` on a second set of peers. A size-based split stays on the current hosts and does not add a machine.
 
 `HARDHATDB_RAFT_BOOTSTRAP=1` bootstraps only when the Raft directory has no state. A later start with the flag still set logs that bootstrap is ignored, then catches up as a follower instead of waiting to become leader. A wiped volume with the flag left on still creates a second group.
 
@@ -230,7 +231,7 @@ Set `HARDHATDB_METRICS_ADDR` (for example `127.0.0.1:9090`) to serve `GET /healt
 | `HARDHATDB_MAX_EXECUTION_TIME` | Per-statement deadline in milliseconds. Default `0`, which sets no deadline. |
 | `HARDHATDB_SHUTDOWN_TIMEOUT` | How long `SIGTERM` waits for sessions before closing the store. Default `15s`. |
 | `HARDHATDB_METRICS_ADDR` | Optional `host:port` for `/healthz`, `/readyz`, and `/metrics`. Unset means those routes are not served. |
-| `HARDHATDB_SEED_EXAMPLE` | `1` creates `mydb.mytable` and the example rows when they are missing. Default is off. |
+| `HARDHATDB_SEED_EXAMPLE` | `1` creates `mydb.accounts` and `mydb.notes`, with the example rows, when `accounts` is missing. Default is off. |
 | `HARDHATDB_META_ADDR` | Turns the meta catalog on. Raft address of this node's meta group. The `HARDHATDB_RAFT_*` variables are the data group this process stores. |
 | `HARDHATDB_META_PEERS` | Meta voters, `id=host:port`, comma-separated. |
 | `HARDHATDB_META_NONVOTERS` | Meta replicas that copy the catalog and do not vote. |

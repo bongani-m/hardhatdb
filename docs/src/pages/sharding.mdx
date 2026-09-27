@@ -44,3 +44,5 @@ SHARD TABLE app.accounts BY id CHECK email
 Each `PEER` is `id`, Raft address, then write-forward address.
 
 A sharded insert includes the shard column. One statement stays on one range. A read that does not name the shard column is sent to every range that holds the table.
+
+A size-based split stays on the current hosts and does not add a machine. A table whose writes do not fit its leader is placed here, with `PEER` naming the other machines.

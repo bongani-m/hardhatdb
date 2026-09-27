@@ -27,11 +27,11 @@ import (
 	"github.com/dolthub/go-mysql-server/sql/types"
 )
 
-// Persistent MySQL server for the example people table. Rows live in a Badger
-// directory and are still there after this process exits.
+// Persistent MySQL server. Rows live in a Badger directory and are still there
+// after this process exits.
 //
 //	HARDHATDB_SEED_EXAMPLE=1 HARDHATDB_BOOTSTRAP_PASSWORD=secret go run ./cmd/hardhatdb sql-server
-//	mysql --host=127.0.0.1 --port=3306 --user=root --password=secret mydb --execute="SELECT name, email FROM mytable;"
+//	mysql --host=127.0.0.1 --port=3306 --user=root --password=secret mydb --execute="SELECT name, email FROM accounts;"
 //
 // Example clients connect to this server over the MySQL protocol.
 // Set HARDHATDB_DATA to choose the directory. The default is data/hardhatdb.
@@ -50,19 +50,23 @@ import (
 //
 // Then, from the host:
 //
-//	mysql --host=127.0.0.1 --port=3306 --user=root --password=secret mydb --execute="SELECT name, email FROM mytable;"
-//	mysql --host=127.0.0.1 --port=3307 --user=root --password=secret mydb --execute="SELECT name, email FROM mytable;"
+//	mysql --host=127.0.0.1 --port=3306 --user=root --password=secret mydb --execute="SELECT name, email FROM accounts;"
+//	mysql --host=127.0.0.1 --port=3307 --user=root --password=secret mydb --execute="SELECT name, email FROM accounts;"
 //
 // HARDHATDB_MYSQL_HOST defaults to localhost. Set it to 0.0.0.0 to accept connections
 // from other containers and from published host ports. HARDHATDB_MYSQL_PORT overrides
 // 3306. HARDHATDB_RAFT_ADVERTISE is the address other nodes dial; HARDHATDB_RAFT_ADDR is
 // the address this process binds.
 
+const (
+	accountsTable = "accounts"
+	notesTable    = "notes"
+)
+
 var (
-	dbName    = "mydb"
-	tableName = "mytable"
-	address   = "localhost"
-	port      = 3306
+	dbName  = "mydb"
+	address = "localhost"
+	port    = 3306
 )
 
 func Serve() {
@@ -141,7 +145,7 @@ func Serve() {
 	ctx := sql.NewContext(context.Background())
 	if seedExample() && (!store.Replicating() || store.IsLeader()) {
 		if err := ensureExample(ctx, store); err != nil {
-			log.Fatalf("seed %s.%s: %v", dbName, tableName, err)
+			log.Fatalf("seed %s: %v", dbName, err)
 		}
 	}
 
@@ -461,6 +465,8 @@ func enableUpstream(store *hardhatdb.Store) error {
 	return nil
 }
 
+// ensureExample creates mydb.accounts and mydb.notes when accounts is missing.
+// accounts.id is the shard column. Each account is inserted with two notes.
 func ensureExample(ctx *sql.Context, store *hardhatdb.Store) error {
 	if !store.HasDatabase(ctx, dbName) {
 		if err := store.CreateDatabase(ctx, dbName); err != nil {
@@ -471,36 +477,143 @@ func ensureExample(ctx *sql.Context, store *hardhatdb.Store) error {
 	if err != nil {
 		return err
 	}
-	_, ok, err := db.GetTableInsensitive(ctx, tableName)
+	_, ok, err := db.GetTableInsensitive(ctx, accountsTable)
 	if err != nil {
 		return err
 	}
 	if ok {
 		return nil
 	}
-	if err := db.(sql.TableCreator).CreateTable(ctx, tableName, peopleSchema(), sql.Collation_Default, ""); err != nil {
-		return err
-	}
-	table, ok, err := db.GetTableInsensitive(ctx, tableName)
+	accountsSchema, err := accountsSchema()
 	if err != nil {
 		return err
 	}
-	if !ok {
-		return fmt.Errorf("table %s was not created", tableName)
+	if err := db.(sql.TableCreator).CreateTable(ctx, accountsTable, accountsSchema, sql.Collation_Default, ""); err != nil {
+		return err
 	}
-
-	inserter := table.(sql.InsertableTable).Inserter(ctx)
-	inserter.StatementBegin(ctx)
+	accounts, err := exampleTable(ctx, db, accountsTable)
+	if err != nil {
+		return err
+	}
+	if err := accounts.CreateIndex(ctx, sql.IndexDef{
+		Name:       "accounts_email",
+		Columns:    []sql.IndexColumn{{Name: "email"}},
+		Constraint: sql.IndexConstraint_Unique,
+	}); err != nil {
+		return err
+	}
+	if err := accounts.CreateIndex(ctx, sql.IndexDef{
+		Name:    "accounts_status_created",
+		Columns: []sql.IndexColumn{{Name: "status"}, {Name: "created_at"}},
+	}); err != nil {
+		return err
+	}
+	notesSchema, err := notesSchema()
+	if err != nil {
+		return err
+	}
+	if err := db.(sql.TableCreator).CreateTable(ctx, notesTable, notesSchema, sql.Collation_Default, ""); err != nil {
+		return err
+	}
+	notes, err := exampleTable(ctx, db, notesTable)
+	if err != nil {
+		return err
+	}
+	if err := notes.CreateIndex(ctx, sql.IndexDef{
+		Name:    "notes_account",
+		Columns: []sql.IndexColumn{{Name: "account_id"}},
+	}); err != nil {
+		return err
+	}
+	if err := notes.AddForeignKey(ctx, sql.ForeignKeyConstraint{
+		Name:           "notes_account_fk",
+		Database:       dbName,
+		Table:          notesTable,
+		Columns:        []string{"account_id"},
+		ParentDatabase: dbName,
+		ParentTable:    accountsTable,
+		ParentColumns:  []string{"id"},
+		OnUpdate:       sql.ForeignKeyReferentialAction_Restrict,
+		OnDelete:       sql.ForeignKeyReferentialAction_Restrict,
+		IsResolved:     true,
+	}); err != nil {
+		return err
+	}
 	created := time.Unix(0, 1667304000000001000).UTC()
-	for _, person := range seedPeople {
-		err := inserter.Insert(ctx, sql.NewRow(
-			person.id,
-			person.name,
-			person.email,
-			types.MustJSON(person.phones),
-			created,
-		))
-		if err != nil {
+	if err := insertExampleRows(ctx, accounts, accountRows(created)); err != nil {
+		return err
+	}
+	return insertExampleRows(ctx, notes, noteRows(created))
+}
+
+func exampleTable(ctx *sql.Context, db sql.Database, name string) (interface {
+	sql.IndexAlterableTable
+	sql.ForeignKeyTable
+	sql.InsertableTable
+}, error) {
+	table, ok, err := db.GetTableInsensitive(ctx, name)
+	if err != nil {
+		return nil, err
+	}
+	if !ok {
+		return nil, fmt.Errorf("table %s was not created", name)
+	}
+	indexed, ok := table.(interface {
+		sql.IndexAlterableTable
+		sql.ForeignKeyTable
+		sql.InsertableTable
+	})
+	if !ok {
+		return nil, fmt.Errorf("table %s cannot store indexes", name)
+	}
+	return indexed, nil
+}
+
+func accountsSchema() (sql.PrimaryKeySchema, error) {
+	email, err := varcharColumn(accountsTable, "email")
+	if err != nil {
+		return sql.PrimaryKeySchema{}, err
+	}
+	name, err := varcharColumn(accountsTable, "name")
+	if err != nil {
+		return sql.PrimaryKeySchema{}, err
+	}
+	return sql.NewPrimaryKeySchema(sql.Schema{
+		{Name: "id", Type: types.Int64, Nullable: false, Source: accountsTable, PrimaryKey: true, AutoIncrement: true},
+		email,
+		name,
+		{Name: "status", Type: types.Int8, Nullable: false, Source: accountsTable},
+		{Name: "tags", Type: types.JSON, Nullable: false, Source: accountsTable},
+		{Name: "created_at", Type: types.MustCreateDatetimeType(query.Type_DATETIME, 6), Nullable: false, Source: accountsTable},
+	}), nil
+}
+
+func notesSchema() (sql.PrimaryKeySchema, error) {
+	body, err := varcharColumn(notesTable, "body")
+	if err != nil {
+		return sql.PrimaryKeySchema{}, err
+	}
+	return sql.NewPrimaryKeySchema(sql.Schema{
+		{Name: "id", Type: types.Int64, Nullable: false, Source: notesTable, PrimaryKey: true, AutoIncrement: true},
+		{Name: "account_id", Type: types.Int64, Nullable: false, Source: notesTable},
+		body,
+		{Name: "created_at", Type: types.MustCreateDatetimeType(query.Type_DATETIME, 6), Nullable: false, Source: notesTable},
+	}), nil
+}
+
+func varcharColumn(table, name string) (*sql.Column, error) {
+	typ, err := types.CreateString(query.Type_VARCHAR, 255, sql.Collation_Default)
+	if err != nil {
+		return nil, err
+	}
+	return &sql.Column{Name: name, Type: typ, Nullable: false, Source: table}, nil
+}
+
+func insertExampleRows(ctx *sql.Context, table sql.InsertableTable, rows []sql.Row) error {
+	inserter := table.Inserter(ctx)
+	inserter.StatementBegin(ctx)
+	for _, row := range rows {
+		if err := inserter.Insert(ctx, row); err != nil {
 			_ = inserter.DiscardChanges(ctx, err)
 			_ = inserter.Close(ctx)
 			return err
@@ -512,24 +625,46 @@ func ensureExample(ctx *sql.Context, store *hardhatdb.Store) error {
 	return inserter.Close(ctx)
 }
 
-func peopleSchema() sql.PrimaryKeySchema {
-	return sql.NewPrimaryKeySchema(sql.Schema{
-		{Name: "id", Type: types.Int64, Nullable: false, Source: tableName, PrimaryKey: true, AutoIncrement: true},
-		{Name: "name", Type: types.Text, Nullable: false, Source: tableName},
-		{Name: "email", Type: types.Text, Nullable: false, Source: tableName},
-		{Name: "phone_numbers", Type: types.JSON, Nullable: false, Source: tableName},
-		{Name: "created_at", Type: types.MustCreateDatetimeType(query.Type_DATETIME, 6), Nullable: false, Source: tableName},
-	})
+func accountRows(created time.Time) []sql.Row {
+	rows := make([]sql.Row, len(seedAccounts))
+	for i, account := range seedAccounts {
+		rows[i] = sql.NewRow(account.id, account.email, account.name, account.status, types.MustJSON(account.tags), created)
+	}
+	return rows
 }
 
-var seedPeople = []struct {
+func noteRows(created time.Time) []sql.Row {
+	rows := make([]sql.Row, len(seedNotes))
+	for i, note := range seedNotes {
+		rows[i] = sql.NewRow(note.id, note.accountID, note.body, created)
+	}
+	return rows
+}
+
+var seedAccounts = []struct {
 	id     int64
-	name   string
 	email  string
-	phones string
+	name   string
+	status int8
+	tags   string
 }{
-	{1, "Jane Deo", "janedeo@gmail.com", `["556-565-566","777-777-777"]`},
-	{2, "Jane Doe", "jane@doe.com", `[]`},
-	{3, "John Doe", "john@doe.com", `["555-555-555"]`},
-	{4, "John Doe", "johnalt@doe.com", `[]`},
+	{1, "ada@example.com", "Ada Lovelace", 1, `["demo"]`},
+	{2, "grace@example.com", "Grace Hopper", 1, `["demo","compiler"]`},
+	{3, "alan@example.com", "Alan Turing", 0, `[]`},
+	{4, "katherine@example.com", "Katherine Johnson", 1, `["orbit"]`},
+}
+
+var seedNotes = []struct {
+	id        int64
+	accountID int64
+	body      string
+}{
+	{1, 1, "Wrote the first program"},
+	{2, 1, "Cluster demo"},
+	{3, 2, "A compiler is a program"},
+	{4, 2, "Second note"},
+	{5, 3, "Can machines think"},
+	{6, 3, "Second note"},
+	{7, 4, "Calculated the trajectory"},
+	{8, 4, "Second note"},
 }

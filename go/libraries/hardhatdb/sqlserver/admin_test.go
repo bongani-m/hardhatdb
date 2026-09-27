@@ -16,6 +16,10 @@ func TestParseAdmin(t *testing.T) {
 	require.True(t, ok)
 	require.Equal(t, adminCmd{kind: adminAdd, id: "n4", addr: "10.1.0.5:7001"}, add)
 
+	nonvoter, ok := parseAdmin(`RAFT ADD NONVOTER 'n4' '10.1.0.5:7001'`)
+	require.True(t, ok)
+	require.Equal(t, adminCmd{kind: adminAddNonvoter, id: "n4", addr: "10.1.0.5:7001"}, nonvoter)
+
 	remove, ok := parseAdmin(`raft remove server "n4"`)
 	require.True(t, ok)
 	require.Equal(t, adminCmd{kind: adminRemove, id: "n4"}, remove)
@@ -25,6 +29,8 @@ func TestParseAdmin(t *testing.T) {
 	_, ok = parseAdmin("SHOW TABLES")
 	require.False(t, ok)
 	_, ok = parseAdmin("RAFT ADD VOTER 'only-one'")
+	require.False(t, ok)
+	_, ok = parseAdmin("RAFT ADD NONVOTER 'only-one'")
 	require.False(t, ok)
 }
 

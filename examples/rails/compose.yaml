@@ -1,6 +1,6 @@
 # This app and the three-node HardhatDB cluster.
 #
-# Create certs at the repo root before the first up (see the repo README).
+# Create certs before the first up: ../gencerts.sh
 # This stack publishes the same MySQL ports as the root compose file.
 # Stop that stack before starting this one.
 #
@@ -30,4 +30,4 @@ services:
     ports:
       - "3000:3000"
     volumes:
-      - ../../certs:/certs:ro
+      - ../certs:/certs:ro

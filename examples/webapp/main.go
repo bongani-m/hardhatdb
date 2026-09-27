@@ -12,23 +12,25 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-// Command examplewebapp is a CRUD API for the HardhatDB server.
-// Start that server first, then run this program:
+// Command examplewebapp is the cluster page for the HardhatDB server.
+// Start that server first, then run this program and open http://localhost:8080.
 //
 //	go run .
 //
-//	curl -s localhost:8080/people?size=2
-//	curl -s 'localhost:8080/people?name=Jane'
+//	curl -s localhost:8080/accounts?size=2
+//	curl -s localhost:8080/cluster
 //
-// MYSQL_ADDRS is every MySQL address, comma-separated. Reads and writes use
-// any of them. A broken connection tries the next address. Leave it unset to
+// MYSQL_ADDRS is every MySQL address, comma-separated. One request stays on
+// one node. A broken connection tries the next address. Leave it unset to
 // use MYSQL_HOST and MYSQL_PORT (default localhost:3306):
 //
 //	MYSQL_ADDRS=127.0.0.1:3306,127.0.0.1:3307,127.0.0.1:3308 go run .
 //
+// Creating an account writes the account and its first note in one transaction,
+// reads that row back on the same connection, then reads it on another node.
 // Another connection can still see an older copy. A write whose connection
 // breaks before a result comes back is sent to the next address. Connections
-// use TLS and trust ../../certs/ca.crt. Set MYSQL_TLS_CA to another PEM
+// use TLS and trust ../certs/ca.crt. Set MYSQL_TLS_CA to another PEM
 // file, or to off for a plaintext server. The password matches the compose
 // cluster default.
 package main
@@ -72,7 +74,7 @@ func main() {
 
 	addr := env("HTTP_ADDR", ":8080")
 	log.Printf("API listening on %s", addr)
-	if err := http.ListenAndServe(addr, NewHandler(NewMySQLStore(nodes...))); err != nil {
+	if err := http.ListenAndServe(addr, NewHandler(NewMySQLStore(addrs, nodes))); err != nil {
 		log.Fatal(err)
 	}
 }
@@ -141,7 +143,7 @@ func mysqlDSN(addr string) string {
 }
 
 // tlsCAPath is the PEM file the client uses to verify the server.
-// The default is the dev certificate at the repo root. MYSQL_TLS_CA=off skips TLS.
+// The default is the dev certificate in examples/certs. MYSQL_TLS_CA=off skips TLS.
 func tlsCAPath() (string, bool) {
 	if ca, ok := os.LookupEnv("MYSQL_TLS_CA"); ok {
 		if ca == "" || ca == "off" {
@@ -151,9 +153,9 @@ func tlsCAPath() (string, bool) {
 	}
 	_, file, _, ok := runtime.Caller(0)
 	if !ok {
-		return filepath.Join("..", "..", "certs", "ca.crt"), true
+		return filepath.Join("..", "certs", "ca.crt"), true
 	}
-	return filepath.Join(filepath.Dir(file), "..", "..", "certs", "ca.crt"), true
+	return filepath.Join(filepath.Dir(file), "..", "certs", "ca.crt"), true
 }
 
 // registerMySQLTLS trusts the server certificate signed by the PEM file at caPath.

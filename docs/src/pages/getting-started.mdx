@@ -12,10 +12,10 @@ Cluster mode stays off unless `HARDHATDB_RAFT_ADDR` is set.
 
 ```bash
 HARDHATDB_SEED_EXAMPLE=1 HARDHATDB_BOOTSTRAP_PASSWORD=secret go run ./cmd/hardhatdb sql-server
-mysql --host=127.0.0.1 --port=3306 --user=root --password=secret mydb --execute="SELECT name, email FROM mytable;"
+mysql --host=127.0.0.1 --port=3306 --user=root --password=secret mydb --execute="SELECT name, email FROM accounts;"
 ```
 
-`HARDHATDB_SEED_EXAMPLE=1` creates `mydb.mytable` on first boot. Leave it unset for an empty data directory.
+`HARDHATDB_SEED_EXAMPLE=1` creates `mydb.accounts` and `mydb.notes` when those tables are missing. `accounts.id` is the shard column. Leave it unset for an empty data directory. A volume created for the previous example still has `mydb.mytable`. Remove it before the first start on this schema: `docker compose down -v`.
 
 The first boot creates one `mysql_native_password` account. `HARDHATDB_BOOTSTRAP_PASSWORD` is required then and is not saved for later boots; the account lives in the data directory. The default user is `root` and the default host is `%`.
 

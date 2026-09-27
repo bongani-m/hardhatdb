@@ -10,7 +10,7 @@ HardhatDB replicates with Raft. There is one leader. Followers apply the same lo
 
 A write on the leader commits through Raft, then returns. A write on a follower is forwarded to the current leader. An explicit transaction is forwarded as a whole. After the leader commits, the follower waits until that commit is applied locally before the next read on the same connection. A different connection can still see an older copy.
 
-`SHOW RAFT STATUS` returns one row: `role`, `leader`, `commit_index`, `applied_index`, and `lag`. On a follower the statement runs locally, so `lag` is how far that node is behind the commit index.
+`SHOW RAFT STATUS` returns one row: `role`, `leader`, `commit_index`, `applied_index`, `lag`, and `suffrage`. On a follower the statement runs locally, so `lag` is how far that node is behind the commit index. `suffrage` is `voter`, `nonvoter`, or `staging`, and it is empty on a standalone process.
 
 ## Binlog
 
@@ -42,7 +42,12 @@ Membership changes are leader statements. A follower forwards them.
 
 ```sql
 RAFT ADD VOTER 'n4' '10.116.0.5:7001';
+RAFT ADD NONVOTER 'n4' '10.116.0.5:7001';
 RAFT REMOVE SERVER 'n4';
 ```
+
+Start the new process with the same peers and certificate names, then add it. A nonvoter copies the log and serves MySQL reads. It does not vote, so quorum stays the voters. Clients add that MySQL address for reads. A write sent there is still forwarded to the leader. A read on another connection can lag. `RAFT REMOVE SERVER` drops a voter or a nonvoter.
+
+Writes still commit on the leader. A faster machine and volume for the voters raises that ceiling. A table whose writes do not fit that leader is placed with `SHARD TABLE` on a second set of peers. A size-based split stays on the current hosts and does not add a machine.
 
 `HARDHATDB_RAFT_BOOTSTRAP=1` bootstraps only when the Raft directory has no state. A later start with the flag still set logs that bootstrap is ignored, then catches up as a follower. A wiped volume with the flag left on still creates a second group.

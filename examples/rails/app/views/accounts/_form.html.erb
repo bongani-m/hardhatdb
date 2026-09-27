@@ -1,0 +1,38 @@
+<%= form_with model: account do |form| %>
+  <% if account.errors.any? %>
+    <ul class="errors">
+      <% account.errors.full_messages.each do |message| %>
+        <li><%= message %></li>
+      <% end %>
+    </ul>
+  <% end %>
+
+  <div>
+    <%= form.label :name %>
+    <%= form.text_field :name, required: true %>
+  </div>
+  <div>
+    <%= form.label :email %>
+    <%= form.email_field :email, required: true %>
+  </div>
+  <div>
+    <%= form.label :status %>
+    <%= form.number_field :status, min: 0, max: 127, required: true %>
+  </div>
+  <div>
+    <%= form.label :tags_text, "Tags" %>
+    <%= form.text_field :tags_text, placeholder: "demo, cluster" %>
+  </div>
+  <% if local_assigns[:with_note] %>
+    <div>
+      <%= form.label :id, "Id" %>
+      <%= form.number_field :id, min: 1, placeholder: "required when sharded" %>
+    </div>
+    <div>
+      <%= label_tag "account_note", "First note" %>
+      <%= text_field_tag "account[note]", params.dig(:account, :note), required: true %>
+    </div>
+  <% end %>
+
+  <%= form.submit %>
+<% end %>

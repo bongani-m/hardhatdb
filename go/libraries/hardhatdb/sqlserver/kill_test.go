@@ -35,9 +35,9 @@ func TestSigkillRestart(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	var email string
-	require.NoError(t, db.QueryRowContext(ctx, "SELECT email FROM mytable WHERE id = 1").Scan(&email))
-	require.Equal(t, "janedeo@gmail.com", email)
-	_, err := db.ExecContext(ctx, "UPDATE mytable SET email = ? WHERE id = 1", "killed@example.com")
+	require.NoError(t, db.QueryRowContext(ctx, "SELECT email FROM accounts WHERE id = 1").Scan(&email))
+	require.Equal(t, "ada@example.com", email)
+	_, err := db.ExecContext(ctx, "UPDATE accounts SET email = ? WHERE id = 1", "killed@example.com")
 	require.NoError(t, err)
 	require.NoError(t, db.Close())
 
@@ -52,7 +52,7 @@ func TestSigkillRestart(t *testing.T) {
 	db = openPersist(t, port, tlsName)
 	ctx, cancel = context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	require.NoError(t, db.QueryRowContext(ctx, "SELECT email FROM mytable WHERE id = 1").Scan(&email))
+	require.NoError(t, db.QueryRowContext(ctx, "SELECT email FROM accounts WHERE id = 1").Scan(&email))
 	require.Equal(t, "killed@example.com", email)
 }
 
@@ -66,7 +66,7 @@ func TestSigtermRestart(t *testing.T) {
 	db := openPersist(t, port, tlsName)
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	_, err := db.ExecContext(ctx, "UPDATE mytable SET email = ? WHERE id = 1", "stopped@example.com")
+	_, err := db.ExecContext(ctx, "UPDATE accounts SET email = ? WHERE id = 1", "stopped@example.com")
 	require.NoError(t, err)
 	require.NoError(t, db.Close())
 
@@ -83,7 +83,7 @@ func TestSigtermRestart(t *testing.T) {
 	ctx, cancel = context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	var email string
-	require.NoError(t, db.QueryRowContext(ctx, "SELECT email FROM mytable WHERE id = 1").Scan(&email))
+	require.NoError(t, db.QueryRowContext(ctx, "SELECT email FROM accounts WHERE id = 1").Scan(&email))
 	require.Equal(t, "stopped@example.com", email)
 }
 
@@ -102,12 +102,13 @@ func TestShowRaftStatusStandalone(t *testing.T) {
 	defer db.Close()
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	var role, leader, commit, applied, lag string
-	require.NoError(t, db.QueryRowContext(ctx, "SHOW RAFT STATUS").Scan(&role, &leader, &commit, &applied, &lag))
+	var role, leader, commit, applied, lag, suffrage string
+	require.NoError(t, db.QueryRowContext(ctx, "SHOW RAFT STATUS").Scan(&role, &leader, &commit, &applied, &lag, &suffrage))
 	require.Equal(t, "standalone", role)
 	require.Equal(t, "0", commit)
 	require.Equal(t, "0", applied)
 	require.Equal(t, "0", lag)
+	require.Equal(t, "", suffrage)
 }
 
 func startPersist(t *testing.T, dir, port, certFile, keyFile string) *exec.Cmd {

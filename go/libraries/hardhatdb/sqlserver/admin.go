@@ -16,9 +16,10 @@ import (
 )
 
 const (
-	adminStatus = "status"
-	adminAdd    = "add"
-	adminRemove = "remove"
+	adminStatus      = "status"
+	adminAdd         = "add"
+	adminAddNonvoter = "add-nonvoter"
+	adminRemove      = "remove"
 )
 
 type adminCmd struct {
@@ -27,9 +28,9 @@ type adminCmd struct {
 	addr string
 }
 
-// parseAdmin recognizes SHOW RAFT STATUS, RAFT ADD VOTER, and RAFT REMOVE SERVER.
-// The SQL parser does not know these statements. Other statements return
-// before the tokenizer runs.
+// parseAdmin recognizes SHOW RAFT STATUS, RAFT ADD VOTER, RAFT ADD NONVOTER,
+// and RAFT REMOVE SERVER. The SQL parser does not know these statements.
+// Other statements return before the tokenizer runs.
 func parseAdmin(query string) (adminCmd, bool) {
 	q := strings.TrimSpace(query)
 	if strings.HasSuffix(q, ";") {
@@ -50,6 +51,12 @@ func parseAdmin(query string) (adminCmd, bool) {
 			return adminCmd{}, false
 		}
 		return adminCmd{kind: adminAdd, id: fields[3], addr: fields[4]}, true
+	}
+	if len(fields) == 5 && strings.EqualFold(fields[0], "RAFT") && strings.EqualFold(fields[1], "ADD") && strings.EqualFold(fields[2], "NONVOTER") {
+		if fields[3] == "" || fields[4] == "" {
+			return adminCmd{}, false
+		}
+		return adminCmd{kind: adminAddNonvoter, id: fields[3], addr: fields[4]}, true
 	}
 	if len(fields) == 4 && strings.EqualFold(fields[0], "RAFT") && strings.EqualFold(fields[1], "REMOVE") && strings.EqualFold(fields[2], "SERVER") {
 		if fields[3] == "" {
@@ -184,6 +191,11 @@ func runAdmin(store *hardhatdb.Store, cmd adminCmd) (cluster.ForwardReply, error
 			return cluster.ForwardReply{}, err
 		}
 		return cluster.ForwardReply{Info: "voter added"}, nil
+	case adminAddNonvoter:
+		if err := store.AddNonvoter(cmd.id, cmd.addr); err != nil {
+			return cluster.ForwardReply{}, err
+		}
+		return cluster.ForwardReply{Info: "nonvoter added"}, nil
 	case adminRemove:
 		if err := store.RemoveServer(cmd.id); err != nil {
 			return cluster.ForwardReply{}, err
@@ -196,13 +208,14 @@ func runAdmin(store *hardhatdb.Store, cmd adminCmd) (cluster.ForwardReply, error
 
 func statusReply(store *hardhatdb.Store) cluster.ForwardReply {
 	st := store.Status()
-	names := []string{"role", "leader", "commit_index", "applied_index", "lag"}
+	names := []string{"role", "leader", "commit_index", "applied_index", "lag", "suffrage"}
 	vals := []string{
 		st.Role,
 		st.Leader,
 		strconv.FormatUint(st.Commit, 10),
 		strconv.FormatUint(st.Applied, 10),
 		strconv.FormatUint(st.Lag, 10),
+		st.Suffrage,
 	}
 	fields := make([]cluster.ForwardField, len(names))
 	cells := make([]cluster.ForwardCell, len(names))

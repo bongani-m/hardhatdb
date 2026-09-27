@@ -1,0 +1,21 @@
+# All three example apps and the three-node HardhatDB cluster.
+#
+# Create certs before the first up: examples/gencerts.sh
+# A volume created for the previous example still has mydb.mytable. Remove it
+# before the first start on this schema:
+#
+#	docker compose -f examples/compose.yaml down -v
+#
+#	docker compose -f examples/compose.yaml up --build
+#
+# Two Raft groups, with accounts.id split at 3, are a separate stack:
+#
+#	docker compose -f examples/compose.sharded.yaml up --build
+#	examples/placeshards.sh
+
+name: hardhatdb-examples
+
+include:
+  - path: webapp/compose.yaml
+  - path: fastapi/compose.yaml
+  - path: rails/compose.yaml

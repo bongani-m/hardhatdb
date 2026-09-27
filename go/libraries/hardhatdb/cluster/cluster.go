@@ -914,7 +914,7 @@ func (c *Group) AddNonvoter(id, addr string) error {
 	return c.raft.AddNonvoter(raft.ServerID(id), raft.ServerAddress(addr), 0, c.timeout).Error()
 }
 
-// RemoveServer drops a voter from the group. id is the Raft server id.
+// RemoveServer drops a voter or a nonvoter from the group. id is the Raft server id.
 func (c *Group) RemoveServer(id string) error {
 	if c == nil {
 		return fmt.Errorf("hardhatdb: store is not replicating")
@@ -926,7 +926,8 @@ func (c *Group) RemoveServer(id string) error {
 }
 
 // Status returns the current Raft role and how far this node has applied.
-// A standalone store reports role "standalone" and zero indexes.
+// A standalone store reports role "standalone" and zero indexes. Suffrage is
+// this process's entry in the local configuration: voter, nonvoter, or staging.
 func (c *Group) Status() RaftStatus {
 	if c == nil || c.raft == nil {
 		return RaftStatus{Role: "standalone"}
@@ -938,12 +939,37 @@ func (c *Group) Status() RaftStatus {
 		lag = commit - applied
 	}
 	return RaftStatus{
-		Role:    strings.ToLower(c.raft.State().String()),
-		Leader:  string(c.raft.Leader()),
-		Commit:  commit,
-		Applied: applied,
-		Lag:     lag,
+		Role:     strings.ToLower(c.raft.State().String()),
+		Leader:   string(c.raft.Leader()),
+		Commit:   commit,
+		Applied:  applied,
+		Lag:      lag,
+		Suffrage: c.suffrage(),
 	}
+}
+
+// suffrage is this process's membership in the local Raft configuration.
+func (c *Group) suffrage() string {
+	fut := c.raft.GetConfiguration()
+	if err := fut.Error(); err != nil {
+		return ""
+	}
+	for _, srv := range fut.Configuration().Servers {
+		if srv.ID != c.id {
+			continue
+		}
+		switch srv.Suffrage {
+		case raft.Voter:
+			return "voter"
+		case raft.Nonvoter:
+			return "nonvoter"
+		case raft.Staging:
+			return "staging"
+		default:
+			return ""
+		}
+	}
+	return ""
 }
 
 // Ready reports that the store is open and, on a cluster node, that this

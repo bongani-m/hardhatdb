@@ -20,12 +20,12 @@ default: &default
   password: <%= ENV.fetch("MYSQL_PASSWORD", "dev-only-change-me") %>
   database: <%= ENV.fetch("MYSQL_DB", "mydb") %>
   <%# Default trusts the repo-root dev certificate. MYSQL_TLS_CA=off uses plaintext. %>
-  <% tls_ca = ENV.fetch("MYSQL_TLS_CA") { Rails.root.join("../../certs/ca.crt").to_s } %>
+  <% tls_ca = ENV.fetch("MYSQL_TLS_CA") { Rails.root.join("../certs/ca.crt").to_s } %>
   <% if tls_ca != "" && tls_ca != "off" %>
   sslca: <%= tls_ca %>
   ssl_mode: required
   <% end %>
-  # The cluster already created mydb.mytable. Do not create, drop, or migrate it.
+  # The cluster already created mydb.accounts and mydb.notes. Do not create, drop, or migrate them.
   database_tasks: false
 
 <% %w[development test production].each do |env_name| %>

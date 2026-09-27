@@ -7,7 +7,7 @@
 
 # Local data and generated stress output
 /data/
-/certs/
+/examples/certs/
 /go/performance/stress/certs/
 /go/performance/stress/results/
 /go/performance/stress/last-compare.txt

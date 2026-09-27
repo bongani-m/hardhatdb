@@ -87,7 +87,7 @@ n2 and n3 use the same peers, the same `HARDHATDB_SERVER_UUID`, and the same pas
 
 After n1 has joined the other two nodes, remove `HARDHATDB_RAFT_BOOTSTRAP` from n1 before the next restart. A restart that still has Raft state ignores the flag, logs that, and joins as a follower. A new empty volume with bootstrap left on still creates a second group.
 
-`SHOW RAFT STATUS` on any node reports the role, the leader address, and how far that node has applied. Add or remove a voter with `RAFT ADD VOTER '<id>' '<host:port>'` and `RAFT REMOVE SERVER '<id>'`. A follower forwards those two statements to the leader.
+`SHOW RAFT STATUS` on any node reports the role, the leader address, how far that node has applied, and `suffrage` (`voter`, `nonvoter`, or `staging`). Add or remove a member with `RAFT ADD VOTER '<id>' '<host:port>'`, `RAFT ADD NONVOTER '<id>' '<host:port>'`, and `RAFT REMOVE SERVER '<id>'`. A follower forwards those statements to the leader. `RAFT REMOVE SERVER` drops a voter or a nonvoter.
 
 ## Start
 
@@ -112,7 +112,7 @@ From an app droplet in the VPC:
 ```bash
 mysql --host=10.116.0.2 --port=3306 --user=root --password=replace-me \
   --ssl-mode=REQUIRED --ssl-ca=/data/certs/ca.crt \
-  mydb --execute="SELECT name, email FROM mytable;"
+  mydb --execute="SELECT name, email FROM accounts;"
 ```
 
 A write to any node is forwarded to the current leader. Example apps take every address and try the next one when a connection breaks:
@@ -120,3 +120,15 @@ A write to any node is forwarded to the current leader. Example apps take every 
 ```bash
 MYSQL_ADDRS=10.116.0.2:3306,10.116.0.3:3306,10.116.0.4:3306
 ```
+
+## Read replica
+
+Tag another droplet `hardhatdb`, put the same certificate names on it (include its VPC address), and start it with the same `HARDHATDB_RAFT_PEERS`, the same `HARDHATDB_SERVER_UUID`, and the same password and certificate paths. Set `HARDHATDB_NODE_ID`, `HARDHATDB_RAFT_ADDR`, `HARDHATDB_RAFT_ADVERTISE`, and `HARDHATDB_MYSQL_HOST` to that droplet. Leave `HARDHATDB_RAFT_BOOTSTRAP` unset. Then from any node:
+
+```sql
+RAFT ADD NONVOTER 'n4' '10.116.0.5:7001';
+```
+
+The new process copies the log and does not vote, so quorum stays n1, n2, and n3. Add its MySQL address to the client list. A write sent there is forwarded to the leader. A read on another connection can lag.
+
+Writes still commit on the leader. A faster droplet and volume for the three voters raises that ceiling. A table whose writes do not fit that leader goes on a second group: `SHARD TABLE` names that group's peers. A size-based split stays on the current hosts and does not add a machine.

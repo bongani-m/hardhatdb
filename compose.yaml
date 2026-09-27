@@ -1,7 +1,7 @@
 # Three-node Raft cluster for the persistent MySQL server.
 #
-# Create certs before the first up (see README.md). Without ca.crt
-# each node exits with: open /certs/ca.crt: no such file or directory
+# Create certs before the first up: examples/gencerts.sh
+# Without ca.crt each node exits with: open /certs/ca.crt: no such file or directory
 #
 #	docker compose up --build
 #
@@ -53,7 +53,7 @@ services:
       - "3306:3306"
     volumes:
       - n1:/data
-      - ./certs:/certs:ro
+      - ./examples/certs:/certs:ro
 
   n2:
     build: *build
@@ -73,7 +73,7 @@ services:
       - "3307:3306"
     volumes:
       - n2:/data
-      - ./certs:/certs:ro
+      - ./examples/certs:/certs:ro
 
   n3:
     build: *build
@@ -93,13 +93,16 @@ services:
       - "3308:3306"
     volumes:
       - n3:/data
-      - ./certs:/certs:ro
+      - ./examples/certs:/certs:ro
 
 networks:
   vpc:
     ipam:
       config:
+        # .2 .3 .4 are the nodes. Dynamic addresses start at .128 so an app
+        # container cannot take a node address while that node is down.
         - subnet: 10.116.0.0/24
+          ip_range: 10.116.0.128/25
           gateway: 10.116.0.1
 
 volumes:

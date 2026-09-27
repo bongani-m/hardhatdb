@@ -27,7 +27,7 @@ go run ./cmd/hardhatdb sql-server
 | `HARDHATDB_MAX_EXECUTION_TIME` | Per-statement deadline in milliseconds. Default `0`, which sets no deadline. |
 | `HARDHATDB_SHUTDOWN_TIMEOUT` | How long `SIGTERM` waits for sessions before closing the store. Default `15s`. |
 | `HARDHATDB_METRICS_ADDR` | Optional `host:port` for `/healthz`, `/readyz`, and `/metrics`. Unset means those routes are not served. |
-| `HARDHATDB_SEED_EXAMPLE` | `1` creates `mydb.mytable` and the example rows when they are missing. Default is off. |
+| `HARDHATDB_SEED_EXAMPLE` | `1` creates `mydb.accounts` and `mydb.notes`, with the example rows, when `accounts` is missing. Default is off. |
 
 ## Accounts
 

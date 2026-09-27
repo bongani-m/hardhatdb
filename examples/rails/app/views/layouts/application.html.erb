@@ -1,7 +1,7 @@
 <!DOCTYPE html>
 <html>
   <head>
-    <title><%= content_for(:title) || "People" %></title>
+    <title><%= content_for(:title) || "Accounts" %></title>
     <meta name="viewport" content="width=device-width,initial-scale=1">
     <%= csrf_meta_tags %>
     <%= csp_meta_tag %>
@@ -10,9 +10,32 @@
 
   <body>
     <header>
-      <a href="<%= people_path %>">People</a>
-      <span class="node">Served by <%= Current.node %></span>
+      <a href="<%= accounts_path %>">Accounts</a>
+      <span class="node">This session is on <%= Current.node %></span>
     </header>
+
+    <section class="nodes">
+      <% cluster_nodes.each do |node| %>
+        <article class="card">
+          <h2><%= node[:addr] %></h2>
+          <% if node[:error] %>
+            <p>down</p>
+          <% else %>
+            <p>
+              <%= node[:row]["role"] %>
+              <% if node[:row]["suffrage"].present? %>
+                · <%= node[:row]["suffrage"] %>
+              <% end %>
+            </p>
+            <p class="muted">leader <%= node[:row]["leader"] %></p>
+            <p class="muted">lag <%= node[:row]["lag"] %></p>
+          <% end %>
+          <% if node[:current] %>
+            <p>this session</p>
+          <% end %>
+        </article>
+      <% end %>
+    </section>
 
     <% if notice %>
       <p class="notice"><%= notice %></p>

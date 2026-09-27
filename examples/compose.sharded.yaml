@@ -1,0 +1,292 @@
+# Two Raft groups for mydb.accounts and mydb.notes.
+# g1–g3 hold ids below 3. g4–g6 hold ids from 3 up.
+# g1–g3 also vote in the meta group that stores the ranges.
+#
+# Create certs first: examples/gencerts.sh
+# After the nodes are up, place the ranges and load the example rows:
+#
+#	docker compose -f examples/compose.sharded.yaml up --build
+#	examples/placeshards.sh
+#
+# Host MySQL ports are 3416–3421. The apps are on 8081, 8001, and 3001 so this
+# stack can run beside the single group in examples/compose.yaml.
+# A sharded insert has to include accounts.id. Ids below 3 go to g1–g3.
+
+name: hardhatdb-sharded
+
+x-build: &build
+  context: ..
+  dockerfile: docker/Dockerfile
+  additional_contexts:
+    go-mysql-server: ../../go-mysql-server
+
+x-env: &env
+  HARDHATDB_DATA: /data/hardhatdb
+  HARDHATDB_RAFT_DIR: /data/raft
+  HARDHATDB_BOOTSTRAP_PASSWORD: ${HARDHATDB_BOOTSTRAP_PASSWORD:-dev-only-change-me}
+  HARDHATDB_TLS_CERT: /certs/server.crt
+  HARDHATDB_TLS_KEY: /certs/server.key
+  HARDHATDB_RAFT_TLS_CERT: /certs/server.crt
+  HARDHATDB_RAFT_TLS_KEY: /certs/server.key
+  HARDHATDB_RAFT_TLS_CA: /certs/ca.crt
+  HARDHATDB_SHARD_FORWARD: 0=10.118.0.2:7102,1=10.118.0.5:7102
+  HARDHATDB_META_PEERS: g1=10.118.0.2:7001,g2=10.118.0.3:7001,g3=10.118.0.4:7001
+  HARDHATDB_META_NONVOTERS: g4=10.118.0.5:7001,g5=10.118.0.6:7001,g6=10.118.0.7:7001
+  HARDHATDB_META_UUID: 66666666-6666-6666-6666-666666666666
+  HARDHATDB_META_DATA: /data/meta
+  HARDHATDB_META_DIR: /data/meta-raft
+
+x-left: &left
+  HARDHATDB_RAFT_PEERS: g1=10.118.0.2:7101,g2=10.118.0.3:7101,g3=10.118.0.4:7101
+  HARDHATDB_SERVER_UUID: 33333333-3333-3333-3333-333333333331
+
+x-right: &right
+  HARDHATDB_RAFT_PEERS: g4=10.118.0.5:7101,g5=10.118.0.6:7101,g6=10.118.0.7:7101
+  HARDHATDB_SERVER_UUID: 44444444-4444-4444-4444-444444444441
+
+x-certs: &certs ./certs:/certs:ro
+
+services:
+  g1:
+    build: *build
+    image: hardhatdb
+    hostname: g1
+    restart: unless-stopped
+    depends_on:
+      - g2
+      - g3
+    networks:
+      shardvpc:
+        ipv4_address: 10.118.0.2
+    environment:
+      <<: [*env, *left]
+      HARDHATDB_NODE_ID: g1
+      HARDHATDB_RAFT_ADDR: 10.118.0.2:7101
+      HARDHATDB_RAFT_ADVERTISE: 10.118.0.2:7101
+      HARDHATDB_RAFT_BOOTSTRAP: "1"
+      HARDHATDB_FORWARD_ADDR: 10.118.0.2:7102
+      HARDHATDB_META_ADDR: 10.118.0.2:7001
+      HARDHATDB_META_ADVERTISE: 10.118.0.2:7001
+      HARDHATDB_META_BOOTSTRAP: "1"
+      HARDHATDB_META_FORWARD: 10.118.0.2:7002
+      HARDHATDB_MYSQL_HOST: 10.118.0.2
+    ports:
+      - "3416:3306"
+    volumes:
+      - g1:/data
+      - *certs
+
+  g2:
+    build: *build
+    image: hardhatdb
+    hostname: g2
+    restart: unless-stopped
+    networks:
+      shardvpc:
+        ipv4_address: 10.118.0.3
+    environment:
+      <<: [*env, *left]
+      HARDHATDB_NODE_ID: g2
+      HARDHATDB_RAFT_ADDR: 10.118.0.3:7101
+      HARDHATDB_RAFT_ADVERTISE: 10.118.0.3:7101
+      HARDHATDB_FORWARD_ADDR: 10.118.0.3:7102
+      HARDHATDB_META_ADDR: 10.118.0.3:7001
+      HARDHATDB_META_ADVERTISE: 10.118.0.3:7001
+      HARDHATDB_META_FORWARD: 10.118.0.3:7002
+      HARDHATDB_MYSQL_HOST: 10.118.0.3
+    ports:
+      - "3417:3306"
+    volumes:
+      - g2:/data
+      - *certs
+
+  g3:
+    build: *build
+    image: hardhatdb
+    hostname: g3
+    restart: unless-stopped
+    networks:
+      shardvpc:
+        ipv4_address: 10.118.0.4
+    environment:
+      <<: [*env, *left]
+      HARDHATDB_NODE_ID: g3
+      HARDHATDB_RAFT_ADDR: 10.118.0.4:7101
+      HARDHATDB_RAFT_ADVERTISE: 10.118.0.4:7101
+      HARDHATDB_FORWARD_ADDR: 10.118.0.4:7102
+      HARDHATDB_META_ADDR: 10.118.0.4:7001
+      HARDHATDB_META_ADVERTISE: 10.118.0.4:7001
+      HARDHATDB_META_FORWARD: 10.118.0.4:7002
+      HARDHATDB_MYSQL_HOST: 10.118.0.4
+    ports:
+      - "3418:3306"
+    volumes:
+      - g3:/data
+      - *certs
+
+  g4:
+    build: *build
+    image: hardhatdb
+    hostname: g4
+    restart: unless-stopped
+    depends_on:
+      - g1
+      - g5
+      - g6
+    networks:
+      shardvpc:
+        ipv4_address: 10.118.0.5
+    environment:
+      <<: [*env, *right]
+      HARDHATDB_NODE_ID: g4
+      HARDHATDB_RAFT_ADDR: 10.118.0.5:7101
+      HARDHATDB_RAFT_ADVERTISE: 10.118.0.5:7101
+      HARDHATDB_RAFT_BOOTSTRAP: "1"
+      HARDHATDB_FORWARD_ADDR: 10.118.0.5:7102
+      HARDHATDB_META_ADDR: 10.118.0.5:7001
+      HARDHATDB_META_ADVERTISE: 10.118.0.5:7001
+      HARDHATDB_META_FORWARD: 10.118.0.5:7002
+      HARDHATDB_MYSQL_HOST: 10.118.0.5
+    ports:
+      - "3419:3306"
+    volumes:
+      - g4:/data
+      - *certs
+
+  g5:
+    build: *build
+    image: hardhatdb
+    hostname: g5
+    restart: unless-stopped
+    depends_on:
+      - g1
+    networks:
+      shardvpc:
+        ipv4_address: 10.118.0.6
+    environment:
+      <<: [*env, *right]
+      HARDHATDB_NODE_ID: g5
+      HARDHATDB_RAFT_ADDR: 10.118.0.6:7101
+      HARDHATDB_RAFT_ADVERTISE: 10.118.0.6:7101
+      HARDHATDB_FORWARD_ADDR: 10.118.0.6:7102
+      HARDHATDB_META_ADDR: 10.118.0.6:7001
+      HARDHATDB_META_ADVERTISE: 10.118.0.6:7001
+      HARDHATDB_META_FORWARD: 10.118.0.6:7002
+      HARDHATDB_MYSQL_HOST: 10.118.0.6
+    ports:
+      - "3420:3306"
+    volumes:
+      - g5:/data
+      - *certs
+
+  g6:
+    build: *build
+    image: hardhatdb
+    hostname: g6
+    restart: unless-stopped
+    depends_on:
+      - g1
+    networks:
+      shardvpc:
+        ipv4_address: 10.118.0.7
+    environment:
+      <<: [*env, *right]
+      HARDHATDB_NODE_ID: g6
+      HARDHATDB_RAFT_ADDR: 10.118.0.7:7101
+      HARDHATDB_RAFT_ADVERTISE: 10.118.0.7:7101
+      HARDHATDB_FORWARD_ADDR: 10.118.0.7:7102
+      HARDHATDB_META_ADDR: 10.118.0.7:7001
+      HARDHATDB_META_ADVERTISE: 10.118.0.7:7001
+      HARDHATDB_META_FORWARD: 10.118.0.7:7002
+      HARDHATDB_MYSQL_HOST: 10.118.0.7
+    ports:
+      - "3421:3306"
+    volumes:
+      - g6:/data
+      - *certs
+
+  webapp:
+    build: ./webapp
+    image: hardhatdb-webapp
+    restart: on-failure
+    depends_on:
+      - g1
+      - g2
+      - g3
+      - g4
+      - g5
+      - g6
+    networks:
+      - shardvpc
+    environment:
+      HTTP_ADDR: ":8080"
+      MYSQL_ADDRS: g1:3306,g2:3306,g3:3306,g4:3306,g5:3306,g6:3306
+      MYSQL_PASSWORD: ${HARDHATDB_BOOTSTRAP_PASSWORD:-dev-only-change-me}
+      MYSQL_TLS_CA: /certs/ca.crt
+    ports:
+      - "8081:8080"
+    volumes:
+      - *certs
+
+  fastapi:
+    build: ./fastapi
+    image: hardhatdb-fastapi
+    restart: on-failure
+    depends_on:
+      - g1
+      - g2
+      - g3
+      - g4
+      - g5
+      - g6
+    networks:
+      - shardvpc
+    environment:
+      HTTP_ADDR: ":8000"
+      MYSQL_ADDRS: g1:3306,g2:3306,g3:3306,g4:3306,g5:3306,g6:3306
+      MYSQL_PASSWORD: ${HARDHATDB_BOOTSTRAP_PASSWORD:-dev-only-change-me}
+      MYSQL_TLS_CA: /certs/ca.crt
+    ports:
+      - "8001:8000"
+    volumes:
+      - *certs
+
+  rails:
+    build: ./rails
+    image: hardhatdb-rails
+    restart: on-failure
+    depends_on:
+      - g1
+      - g2
+      - g3
+      - g4
+      - g5
+      - g6
+    networks:
+      - shardvpc
+    environment:
+      RAILS_ENV: development
+      MYSQL_ADDRS: g1:3306,g2:3306,g3:3306,g4:3306,g5:3306,g6:3306
+      MYSQL_PASSWORD: ${HARDHATDB_BOOTSTRAP_PASSWORD:-dev-only-change-me}
+      MYSQL_TLS_CA: /certs/ca.crt
+    ports:
+      - "3001:3000"
+    volumes:
+      - *certs
+
+networks:
+  shardvpc:
+    ipam:
+      config:
+        # .2–.7 are the nodes. Dynamic addresses start at .128.
+        - subnet: 10.118.0.0/24
+          ip_range: 10.118.0.128/25
+          gateway: 10.118.0.1
+
+volumes:
+  g1:
+  g2:
+  g3:
+  g4:
+  g5:
+  g6:

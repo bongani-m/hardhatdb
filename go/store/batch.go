@@ -18,13 +18,14 @@ type Peer struct {
 }
 
 // RaftStatus is one process's view of a Raft group. A standalone store reports
-// role "standalone" and zero indexes.
+// role "standalone", an empty suffrage, and zero indexes.
 type RaftStatus struct {
-	Role    string
-	Leader  string
-	Commit  uint64
-	Applied uint64
-	Lag     uint64
+	Role     string
+	Leader   string
+	Commit   uint64
+	Applied  uint64
+	Lag      uint64
+	Suffrage string
 }
 
 // KVOp is one recorded Badger write. Delete is set instead of an empty value

@@ -12,29 +12,12 @@ This starts the three-node Compose cluster, then reads the example table from th
 - The `mysql` client
 - `openssl`
 
-Create the test CA and server certificate before the first `up`. They are not committed. Compose mounts `certs` at `/certs`, and Raft reads `ca.crt`, `server.crt`, and `server.key` from there. Without `ca.crt` each node logs `open /certs/ca.crt: no such file or directory` and exits, and Compose restarts it.
+Create the test CA and server certificate before the first `up`. They are not committed. `examples/gencerts.sh` writes them to `examples/certs`. Compose mounts that directory at `/certs`, and Raft reads `ca.crt`, `server.crt`, and `server.key` from there. Without `ca.crt` each node logs `open /certs/ca.crt: no such file or directory` and exits, and Compose restarts it.
 
 The server certificate is signed by that CA, carries `serverAuth` and `clientAuth`, and names the addresses clients dial: `127.0.0.1` from the host, the node names, and the private addresses Compose assigns.
 
 ```bash
-mkdir -p certs
-openssl req -x509 -newkey rsa:2048 -nodes \
-  -keyout certs/ca.key \
-  -out certs/ca.crt \
-  -days 365 \
-  -subj "/CN=hardhatdb-ca" \
-  -addext "basicConstraints=critical,CA:TRUE" \
-  -addext "keyUsage=critical,keyCertSign,cRLSign"
-openssl req -newkey rsa:2048 -nodes \
-  -keyout certs/server.key \
-  -out certs/server.csr \
-  -subj "/CN=hardhatdb" \
-  -addext "subjectAltName=DNS:localhost,DNS:n1,DNS:n2,DNS:n3,IP:127.0.0.1,IP:10.116.0.2,IP:10.116.0.3,IP:10.116.0.4" \
-  -addext "extendedKeyUsage=serverAuth,clientAuth"
-openssl x509 -req -in certs/server.csr \
-  -CA certs/ca.crt -CAkey certs/ca.key -CAcreateserial \
-  -out certs/server.crt -days 365 \
-  -copy_extensions copy
+examples/gencerts.sh
 docker compose up --build
 ```
 
@@ -48,30 +31,36 @@ A stack that is already restarting picks the files up after `docker compose rest
 | n2 | 3307 | 10.116.0.3 |
 | n3 | 3308 | 10.116.0.4 |
 
-`n1` bootstraps the Raft group. `n2` and `n3` join it. Raft on port 7001 and the write-forward port 7002 stay on the `vpc` network and are not published to the host. Compose sets `HARDHATDB_BOOTSTRAP_PASSWORD` to `dev-only-change-me` unless you override it. That value is used only when a node has no accounts yet. `HARDHATDB_SEED_EXAMPLE=1` creates `mydb.mytable`.
+`n1` bootstraps the Raft group. `n2` and `n3` join it. Raft on port 7001 and the write-forward port 7002 stay on the `vpc` network and are not published to the host. Compose sets `HARDHATDB_BOOTSTRAP_PASSWORD` to `dev-only-change-me` unless you override it. That value is used only when a node has no accounts yet. `HARDHATDB_SEED_EXAMPLE=1` creates `mydb.accounts` and `mydb.notes`. `accounts.id` is the shard column. A volume created for the previous example still has `mydb.mytable`. Remove it before the first start on this schema: `docker compose down -v`.
 
 ## Check the leader, then a follower
 
 ```bash
 mysql --host=127.0.0.1 --port=3306 --user=root --password=dev-only-change-me \
-  --ssl-mode=REQUIRED --ssl-ca=certs/ca.crt \
-  mydb --execute="SELECT name, email FROM mytable;"
+  --ssl-mode=REQUIRED --ssl-ca=examples/certs/ca.crt \
+  mydb --execute="SELECT name, email FROM accounts;"
 mysql --host=127.0.0.1 --port=3307 --user=root --password=dev-only-change-me \
-  --ssl-mode=REQUIRED --ssl-ca=certs/ca.crt \
-  mydb --execute="SELECT name, email FROM mytable;"
+  --ssl-mode=REQUIRED --ssl-ca=examples/certs/ca.crt \
+  mydb --execute="SELECT name, email FROM accounts;"
 ```
 
 Writes succeed on the leader. A write to port 3307 or 3308 is forwarded. Ask any node who the leader is:
 
 ```bash
 mysql --host=127.0.0.1 --port=3308 --user=root --password=dev-only-change-me \
-  --ssl-mode=REQUIRED --ssl-ca=certs/ca.crt \
+  --ssl-mode=REQUIRED --ssl-ca=examples/certs/ca.crt \
   --execute="SHOW RAFT STATUS;"
 ```
 
 ## Clients
 
-Each example app has a compose file that starts the app with this cluster. Stop the root stack first. These stacks use the same MySQL ports.
+Each example app has a compose file that starts the app with this cluster. Stop the root stack first. These stacks use the same MySQL ports. One file starts the cluster and all three apps:
+
+```bash
+docker compose -f examples/compose.yaml up --build
+```
+
+Or start one language:
 
 ```bash
 docker compose -f examples/webapp/compose.yaml up --build
@@ -83,7 +72,9 @@ docker compose -f examples/fastapi/compose.yaml up --build
 |-----|-----|
 | `examples/webapp` | http://localhost:8080 |
 | `examples/rails` | http://localhost:3000 |
-| `examples/fastapi` | http://localhost:8080/docs |
+| `examples/fastapi` | http://localhost:8000/docs |
+
+The page on port 8080 shows each node's `SHOW RAFT STATUS`, which address receives the next write, and whether another node can see that row yet.
 
 From the host, the same clients take every published address. A broken connection tries the next one:
 
@@ -91,7 +82,16 @@ From the host, the same clients take every published address. A broken connectio
 MYSQL_ADDRS=127.0.0.1:3306,127.0.0.1:3307,127.0.0.1:3308
 ```
 
-The example clients trust `certs/ca.crt` unless `MYSQL_TLS_CA` is set. `MYSQL_TLS_CA=off` connects without TLS.
+The example clients trust `examples/certs/ca.crt` unless `MYSQL_TLS_CA` is set. `MYSQL_TLS_CA=off` connects without TLS.
+
+## Two groups
+
+`examples/compose.sharded.yaml` places `accounts.id` on two Raft groups. Ids below 3 are on `g1`–`g3`. Ids from 3 up are on `g4`–`g6`. `g1`–`g3` also vote in the meta group. Host MySQL ports are 3416–3421, and the apps are on 8081, 8001, and 3001. A new account includes `id`.
+
+```bash
+docker compose -f examples/compose.sharded.yaml up --build
+examples/placeshards.sh
+```
 
 ## Stop
 

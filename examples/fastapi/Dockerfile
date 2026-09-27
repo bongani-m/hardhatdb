@@ -5,6 +5,6 @@ COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 COPY main.py store.py ./
 
-EXPOSE 8080
-ENV HTTP_ADDR=:8080
+EXPOSE 8000
+ENV HTTP_ADDR=:8000
 CMD ["python", "main.py"]

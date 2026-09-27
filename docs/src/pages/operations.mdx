@@ -27,8 +27,13 @@ Create a CA and a server certificate that names every address clients and peers 
 ```sql
 SHOW RAFT STATUS;
 RAFT ADD VOTER 'n4' '10.116.0.5:7001';
+RAFT ADD NONVOTER 'n4' '10.116.0.5:7001';
 RAFT REMOVE SERVER 'n4';
 ```
+
+`SHOW RAFT STATUS` includes `suffrage`: `voter`, `nonvoter`, or `staging`. It is empty on a standalone process. A nonvoter copies the log and serves reads. It does not vote. A write sent to it is forwarded to the leader. A read on another connection can lag. `RAFT REMOVE SERVER` drops a voter or a nonvoter. A follower forwards the membership statements to the leader.
+
+Writes still commit on the leader. A faster machine for the voters raises that ceiling. A table whose writes do not fit that leader is placed with `SHARD TABLE` on a second set of peers. A size-based split stays on the current hosts and does not add a machine.
 
 `HARDHATDB_RAFT_BOOTSTRAP=1` bootstraps only when the Raft directory has no state. After the group has started, remove the flag from the bootstrap node before a restart onto a new empty volume. A restart that still has Raft state ignores the flag and joins as a follower. A wiped volume with the flag left on creates a second group.
 
