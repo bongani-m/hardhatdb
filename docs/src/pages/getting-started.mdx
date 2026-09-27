@@ -1,0 +1,51 @@
+---
+title: Getting Started
+---
+
+# Getting Started
+
+Run the server from the `go` directory. Building needs ICU headers.
+
+## One process
+
+Cluster mode stays off unless `HARDHATDB_RAFT_ADDR` is set.
+
+```bash
+HARDHATDB_SEED_EXAMPLE=1 HARDHATDB_BOOTSTRAP_PASSWORD=secret go run ./cmd/hardhatdb sql-server
+mysql --host=127.0.0.1 --port=3306 --user=root --password=secret mydb --execute="SELECT name, email FROM mytable;"
+```
+
+`HARDHATDB_SEED_EXAMPLE=1` creates `mydb.mytable` on first boot. Leave it unset for an empty data directory.
+
+The first boot creates one `mysql_native_password` account. `HARDHATDB_BOOTSTRAP_PASSWORD` is required then and is not saved for later boots; the account lives in the data directory. The default user is `root` and the default host is `%`.
+
+The server listens on `localhost:3306`. Data is stored in `data/hardhatdb`. Set `HARDHATDB_DATA` to use another directory. Leave `HARDHATDB_TLS_CERT` and `HARDHATDB_TLS_KEY` unset to stay on plaintext. Set both to require TLS.
+
+On a machine where ICU is installed with Homebrew:
+
+```bash
+CGO_CPPFLAGS="-I/opt/homebrew/opt/icu4c/include" \
+CGO_LDFLAGS="-L/opt/homebrew/opt/icu4c/lib" \
+go run ./cmd/hardhatdb sql-server
+```
+
+## One container
+
+```bash
+docker compose build
+docker run --rm -p 3306:3306 -v hardhatdb-data:/data \
+  -e HARDHATDB_MYSQL_HOST=0.0.0.0 \
+  -e HARDHATDB_BOOTSTRAP_PASSWORD=secret \
+  hardhatdb
+```
+
+`HARDHATDB_MYSQL_HOST=0.0.0.0` is required for the published port to accept connections. Data inside the container is `/data/hardhatdb`.
+
+`docker compose up n1` still starts `n2` and `n3`, because `n1` depends on them and every service sets `HARDHATDB_RAFT_ADDR`.
+
+## Next steps
+
+- [Demo](/demo) starts the three-node Compose cluster and checks a follower.
+- [Replication](/replication) covers write forwarding, the binlog, and an upstream MySQL source.
+- [Reference](/reference) lists every environment variable.
+- [Operations](/operations) covers shutdown, membership changes, and TLS.

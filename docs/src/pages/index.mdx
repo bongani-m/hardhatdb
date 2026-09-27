@@ -1,0 +1,30 @@
+---
+title: HardhatDB
+---
+
+import { Hero } from "../components/Hero.tsx";
+
+<Hero />
+
+## What & Why?
+
+HardhatDB is a MySQL server backed by one Badger directory. Rows are still there after the process exits. A single process stores data locally. Set `HARDHATDB_RAFT_ADDR` and the same server joins a Raft group: writes go to the leader, followers forward them, and any node can stream the binlog.
+
+**Key features:**
+
+- **MySQL protocol**: Connect with a MySQL client. The server speaks the wire protocol and runs SQL through go-mysql-server.
+- **Durable storage**: Tables live in Badger. The data directory survives a restart.
+- **Raft replication**: One group, a leader for writes, and followers that forward a write or a whole explicit transaction.
+- **Same GTID stream**: `FLUSH BINARY LOGS` on the leader rolls every node's binlog together. Any node can stream it, including after a promotion.
+- **Upstream replica**: The current primary can replicate from a MySQL source and continue from the stored GTID after failover.
+- **Range sharding**: A meta group holds the catalog. Each data group owns a key range. A statement that names the shard column stays on one range.
+
+## When it fits
+
+| Use | How HardhatDB helps |
+|-----|---------------------|
+| **A durable MySQL process** | One Badger directory, one listener, no cluster required |
+| **A small Raft group** | Three nodes, writes on the leader, reads on any node |
+| **App failover** | Clients take every MySQL address and try the next one when a connection breaks |
+| **A replica of upstream MySQL** | `CHANGE REPLICATION SOURCE TO` on the group, GTID auto-position |
+| **Range-partitioned data** | `SHARD TABLE` places each key range on its own Raft group |

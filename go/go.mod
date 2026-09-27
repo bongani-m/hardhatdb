@@ -1,4 +1,4 @@
-module github.com/bongani-m/persist/go
+module github.com/bongani-m/hardhatdb/go
 
 go 1.26.2
 

@@ -9,31 +9,31 @@
 # its address on the vpc network. MySQL is published on the host. Raft is not
 # published. n1 bootstraps the group. Writes succeed on the leader.
 
-name: gms-persist
+name: hardhatdb
 
 x-build: &build
   context: .
   dockerfile: docker/Dockerfile
   additional_contexts:
-    gms: ../go-mysql-server
+    go-mysql-server: ../go-mysql-server
 
 x-env: &env
-  GMS_SERVER_UUID: 11111111-1111-1111-1111-111111111111
-  GMS_RAFT_PEERS: n1=10.116.0.2:7001,n2=10.116.0.3:7001,n3=10.116.0.4:7001
-  GMS_RAFT_DIR: /data/raft
-  GMS_DATA: /data/gms
-  GMS_BOOTSTRAP_PASSWORD: ${GMS_BOOTSTRAP_PASSWORD:-dev-only-change-me}
-  GMS_SEED_EXAMPLE: "1"
-  GMS_TLS_CERT: /certs/server.crt
-  GMS_TLS_KEY: /certs/server.key
-  GMS_RAFT_TLS_CERT: /certs/server.crt
-  GMS_RAFT_TLS_KEY: /certs/server.key
-  GMS_RAFT_TLS_CA: /certs/ca.crt
+  HARDHATDB_SERVER_UUID: 11111111-1111-1111-1111-111111111111
+  HARDHATDB_RAFT_PEERS: n1=10.116.0.2:7001,n2=10.116.0.3:7001,n3=10.116.0.4:7001
+  HARDHATDB_RAFT_DIR: /data/raft
+  HARDHATDB_DATA: /data/hardhatdb
+  HARDHATDB_BOOTSTRAP_PASSWORD: ${HARDHATDB_BOOTSTRAP_PASSWORD:-dev-only-change-me}
+  HARDHATDB_SEED_EXAMPLE: "1"
+  HARDHATDB_TLS_CERT: /certs/server.crt
+  HARDHATDB_TLS_KEY: /certs/server.key
+  HARDHATDB_RAFT_TLS_CERT: /certs/server.crt
+  HARDHATDB_RAFT_TLS_KEY: /certs/server.key
+  HARDHATDB_RAFT_TLS_CA: /certs/ca.crt
 
 services:
   n1:
     build: *build
-    image: gms-persist
+    image: hardhatdb
     hostname: n1
     restart: unless-stopped
     depends_on:
@@ -44,11 +44,11 @@ services:
         ipv4_address: 10.116.0.2
     environment:
       <<: *env
-      GMS_NODE_ID: n1
-      GMS_RAFT_ADDR: 10.116.0.2:7001
-      GMS_RAFT_ADVERTISE: 10.116.0.2:7001
-      GMS_RAFT_BOOTSTRAP: "1"
-      GMS_MYSQL_HOST: 10.116.0.2
+      HARDHATDB_NODE_ID: n1
+      HARDHATDB_RAFT_ADDR: 10.116.0.2:7001
+      HARDHATDB_RAFT_ADVERTISE: 10.116.0.2:7001
+      HARDHATDB_RAFT_BOOTSTRAP: "1"
+      HARDHATDB_MYSQL_HOST: 10.116.0.2
     ports:
       - "3306:3306"
     volumes:
@@ -57,7 +57,7 @@ services:
 
   n2:
     build: *build
-    image: gms-persist
+    image: hardhatdb
     hostname: n2
     restart: unless-stopped
     networks:
@@ -65,10 +65,10 @@ services:
         ipv4_address: 10.116.0.3
     environment:
       <<: *env
-      GMS_NODE_ID: n2
-      GMS_RAFT_ADDR: 10.116.0.3:7001
-      GMS_RAFT_ADVERTISE: 10.116.0.3:7001
-      GMS_MYSQL_HOST: 10.116.0.3
+      HARDHATDB_NODE_ID: n2
+      HARDHATDB_RAFT_ADDR: 10.116.0.3:7001
+      HARDHATDB_RAFT_ADVERTISE: 10.116.0.3:7001
+      HARDHATDB_MYSQL_HOST: 10.116.0.3
     ports:
       - "3307:3306"
     volumes:
@@ -77,7 +77,7 @@ services:
 
   n3:
     build: *build
-    image: gms-persist
+    image: hardhatdb
     hostname: n3
     restart: unless-stopped
     networks:
@@ -85,10 +85,10 @@ services:
         ipv4_address: 10.116.0.4
     environment:
       <<: *env
-      GMS_NODE_ID: n3
-      GMS_RAFT_ADDR: 10.116.0.4:7001
-      GMS_RAFT_ADVERTISE: 10.116.0.4:7001
-      GMS_MYSQL_HOST: 10.116.0.4
+      HARDHATDB_NODE_ID: n3
+      HARDHATDB_RAFT_ADDR: 10.116.0.4:7001
+      HARDHATDB_RAFT_ADVERTISE: 10.116.0.4:7001
+      HARDHATDB_MYSQL_HOST: 10.116.0.4
     ports:
       - "3308:3306"
     volumes:

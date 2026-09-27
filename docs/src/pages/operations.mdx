@@ -1,0 +1,43 @@
+---
+title: Operations
+---
+
+# Operations
+
+## Shutdown
+
+`SIGTERM` and `SIGINT` stop the MySQL listener, wait up to `HARDHATDB_SHUTDOWN_TIMEOUT` (default 15s) for sessions to finish, then shut Raft down and sync Badger.
+
+## Accounts
+
+The first boot creates one `mysql_native_password` account. `HARDHATDB_BOOTSTRAP_PASSWORD` is required then and is not saved for later boots. The account lives in the data directory. The default user is `root` and the default host is `%`, so a published Docker port and other containers can connect.
+
+A follower that has not received the account yet rejects every login.
+
+## TLS
+
+Leave `HARDHATDB_TLS_CERT` and `HARDHATDB_TLS_KEY` unset and MySQL stays on plaintext. Set both and the listener requires TLS.
+
+Raft is stricter. A non-loopback `HARDHATDB_RAFT_ADDR` requires `HARDHATDB_RAFT_TLS_CERT`, `HARDHATDB_RAFT_TLS_KEY`, and `HARDHATDB_RAFT_TLS_CA`. The certificate needs `serverAuth` and `clientAuth`. Peers present it and verify it with that CA. The same files can be the MySQL certificate.
+
+Create a CA and a server certificate that names every address clients and peers dial. For the Compose cluster that is `127.0.0.1`, the node names, and `10.116.0.2`, `10.116.0.3`, `10.116.0.4`. The [Demo](/demo) has the commands. A DigitalOcean deployment uses the same plan with the VPC addresses; see `droplets/README.md` in the repository.
+
+## Membership
+
+```sql
+SHOW RAFT STATUS;
+RAFT ADD VOTER 'n4' '10.116.0.5:7001';
+RAFT REMOVE SERVER 'n4';
+```
+
+`HARDHATDB_RAFT_BOOTSTRAP=1` bootstraps only when the Raft directory has no state. After the group has started, remove the flag from the bootstrap node before a restart onto a new empty volume. A restart that still has Raft state ignores the flag and joins as a follower. A wiped volume with the flag left on creates a second group.
+
+A volume created with an older peer list still has that list. Remove it before the first start on a new address plan: `docker compose down -v`.
+
+## Listener limits
+
+`SET GLOBAL max_connections` does not resize the listener. The cap is `HARDHATDB_MAX_CONNECTIONS`, read at start. The default is `151`. `HARDHATDB_NET_READ_TIMEOUT` and `HARDHATDB_NET_WRITE_TIMEOUT` are also read at start. A bare number is seconds. Unset means no socket deadline. `HARDHATDB_MAX_EXECUTION_TIME` is a per-statement deadline in milliseconds. The default `0` sets no deadline.
+
+## Health
+
+Set `HARDHATDB_METRICS_ADDR` (for example `127.0.0.1:9090`) to serve `GET /healthz`, `GET /readyz`, and `GET /metrics`. Leave it unset and that port stays closed. The series are listed in [Prometheus Metrics](/metrics).

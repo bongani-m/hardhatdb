@@ -23,7 +23,7 @@ func PrimaryKey(ctx context.Context, schema sql.Schema, ordinals []int, row sql.
 	var tie []byte
 	for _, ord := range ordinals {
 		if ord < 0 || ord >= len(row) {
-			return nil, fmt.Errorf("persist: primary key ordinal %d is outside the row", ord)
+			return nil, fmt.Errorf("hardhatdb: primary key ordinal %d is outside the row", ord)
 		}
 		var typ sql.Type
 		if ord < len(schema) {
@@ -120,7 +120,7 @@ func CollationWeight(typ sql.Type, text string) ([]byte, error) {
 	for len(text) > 0 {
 		r, size := utf8.DecodeRuneInString(text)
 		if r == utf8.RuneError && size == 1 {
-			return nil, fmt.Errorf("persist: malformed string for collation key")
+			return nil, fmt.Errorf("hardhatdb: malformed string for collation key")
 		}
 		binary.BigEndian.PutUint32(part[:], uint32(sorter(r)))
 		buf = append(buf, part[:]...)
@@ -345,7 +345,7 @@ func EncodeIndexColumns(ctx context.Context, fields []IndexField, row sql.Row) (
 	var buf []byte
 	for _, field := range fields {
 		if field.Ordinal < 0 || field.Ordinal >= len(row) {
-			return nil, false, fmt.Errorf("persist: index ordinal %d is outside the row", field.Ordinal)
+			return nil, false, fmt.Errorf("hardhatdb: index ordinal %d is outside the row", field.Ordinal)
 		}
 		if row[field.Ordinal] == nil {
 			hasNull = true

@@ -1,0 +1,48 @@
+---
+title: Replication
+---
+
+# Replication
+
+HardhatDB replicates with Raft. There is one leader. Followers apply the same log and can serve reads that are behind the commit index.
+
+## Writes
+
+A write on the leader commits through Raft, then returns. A write on a follower is forwarded to the current leader. An explicit transaction is forwarded as a whole. After the leader commits, the follower waits until that commit is applied locally before the next read on the same connection. A different connection can still see an older copy.
+
+`SHOW RAFT STATUS` returns one row: `role`, `leader`, `commit_index`, `applied_index`, and `lag`. On a follower the statement runs locally, so `lag` is how far that node is behind the commit index.
+
+## Binlog
+
+Every node writes a binlog beside the Raft directory. `HARDHATDB_SERVER_UUID` is shared by the group and is the GTID server id. `HARDHATDB_BINLOG_MAX_SIZE` rolls the binlog after a transaction crosses that many bytes. The default is 1 GiB.
+
+`FLUSH BINARY LOGS` on the leader rolls every node's binlog together. Any node can stream that binlog. After a promotion the GTID stream is the same.
+
+## Upstream MySQL
+
+Set the same source on every node and the current primary replicates from it. A follower does not open the upstream connection. After a failover the new primary continues from the GTID stored with the applied rows.
+
+```sql
+CHANGE REPLICATION SOURCE TO
+  SOURCE_HOST = 'mysql.example',
+  SOURCE_PORT = 3306,
+  SOURCE_USER = 'repl',
+  SOURCE_PASSWORD = 'secret',
+  SOURCE_AUTO_POSITION = 1;
+START REPLICA;
+```
+
+`SOURCE_AUTO_POSITION` cannot be turned off. `STOP REPLICA` stops the job. The password is stored in a local file beside the Raft directory, so a promoted node can dial only if it already has that password. `REPLICATE_REWRITE_DB` is rejected.
+
+The same values can be set in the environment before the first start: `HARDHATDB_SOURCE_HOST`, `HARDHATDB_SOURCE_PORT`, `HARDHATDB_SOURCE_USER`, and `HARDHATDB_SOURCE_PASSWORD`.
+
+## Membership
+
+Membership changes are leader statements. A follower forwards them.
+
+```sql
+RAFT ADD VOTER 'n4' '10.116.0.5:7001';
+RAFT REMOVE SERVER 'n4';
+```
+
+`HARDHATDB_RAFT_BOOTSTRAP=1` bootstraps only when the Raft directory has no state. A later start with the flag still set logs that bootstrap is ignored, then catches up as a follower. A wiped volume with the flag left on still creates a second group.

@@ -1,0 +1,46 @@
+---
+title: Sharding
+---
+
+# Sharding
+
+A ranged cluster keeps the catalog on a meta group and places each table's rows on data groups by key range. A commit waits for the quorum of the group that owns the row.
+
+## Meta group
+
+`HARDHATDB_META_ADDR` turns the meta catalog on. It is the Raft address of this node's meta group. The `HARDHATDB_RAFT_*` variables are the data group this process stores.
+
+| Variable | Role |
+|----------|------|
+| `HARDHATDB_META_ADDR` | Raft address of this node's meta group |
+| `HARDHATDB_META_PEERS` | Meta voters, `id=host:port`, comma-separated |
+| `HARDHATDB_META_NONVOTERS` | Meta replicas that copy the catalog and do not vote |
+| `HARDHATDB_META_BOOTSTRAP` | `1` on one meta voter, the first time the group starts |
+| `HARDHATDB_META_DATA` | Badger directory for the catalog. Default `data/meta` |
+| `HARDHATDB_META_DIR` | Raft directory for the catalog. Default `data/meta-raft` |
+| `HARDHATDB_META_FORWARD` | Meta write-forward address. Required when the shard forward port would otherwise collide with it |
+| `HARDHATDB_SHARD_FORWARD` | `index=host:port` for one member of each data group. Schema statements are sent to every address. The index is a label |
+
+## Placing a range
+
+`SHARD TABLE` records a key range in meta. `START` and `END` are exclusive integer bounds. `CHECK` names an extra column that must travel with the shard key. `GROUP` and `PEER` name a data group that already exists. Without `GROUP`, the range covers this process's data group.
+
+```sql
+SHARD TABLE app.accounts BY id CHECK email
+  RANGE END 2500
+  GROUP 33333333-3333-3333-3333-333333333331
+  PEER r1 10.119.0.2:7101 10.119.0.2:7102
+  PEER r2 10.119.0.3:7101 10.119.0.3:7102
+  PEER r3 10.119.0.4:7101 10.119.0.4:7102;
+
+SHARD TABLE app.accounts BY id CHECK email
+  RANGE START 2500
+  GROUP 44444444-4444-4444-4444-444444444441
+  PEER r4 10.119.0.5:7101 10.119.0.5:7102
+  PEER r5 10.119.0.6:7101 10.119.0.6:7102
+  PEER r6 10.119.0.7:7101 10.119.0.7:7102;
+```
+
+Each `PEER` is `id`, Raft address, then write-forward address.
+
+A sharded insert includes the shard column. One statement stays on one range. A read that does not name the shard column is sent to every range that holds the table.

@@ -8,12 +8,12 @@
 #   ranged      127.0.0.1:3376-3381. Two data groups of three voters, placed by key range.
 #
 # MySQL flushes the redo log and the binlog on commit, which is the same
-# durability bar as the single-node persist server (Badger SyncWrites).
+# durability bar as the single-node hardhatdb server (Badger SyncWrites).
 # The cluster also waits for a Raft quorum before a write returns.
 # TiDB reads and writes go through one SQL server to three TiKV nodes.
 # A committed write waits for two Raft quorums, prewrite then commit.
 #
-# Every server requires TLS. The persist account is caching_sha2_password,
+# Every server requires TLS. The hardhatdb account is caching_sha2_password,
 # and that plugin is refused on a plaintext TCP connection. MySQL uses the
 # same certificate so the comparison includes the same handshake cost.
 # run.sh writes certs next to this file the first time it starts.
@@ -28,22 +28,22 @@
 #
 # go/performance/stress/run.sh does that and then runs the client.
 
-name: gms-stress
+name: hardhatdb-stress
 
 x-build: &build
   context: ../../..
   dockerfile: docker/Dockerfile
   additional_contexts:
-    gms: ../../../../go-mysql-server
+    go-mysql-server: ../../../../go-mysql-server
 
-x-gms: &gms
-  GMS_BOOTSTRAP_PASSWORD: stress
-  GMS_DATA: /data/gms
-  GMS_TLS_CERT: /certs/server.crt
-  GMS_TLS_KEY: /certs/server.key
-  GMS_RAFT_TLS_CERT: /certs/server.crt
-  GMS_RAFT_TLS_KEY: /certs/server.key
-  GMS_RAFT_TLS_CA: /certs/ca.crt
+x-hardhatdb: &hardhatdb
+  HARDHATDB_BOOTSTRAP_PASSWORD: stress
+  HARDHATDB_DATA: /data/hardhatdb
+  HARDHATDB_TLS_CERT: /certs/server.crt
+  HARDHATDB_TLS_KEY: /certs/server.key
+  HARDHATDB_RAFT_TLS_CERT: /certs/server.crt
+  HARDHATDB_RAFT_TLS_KEY: /certs/server.key
+  HARDHATDB_RAFT_TLS_CA: /certs/ca.crt
 
 x-certs: &certs ./certs:/certs:ro
 
@@ -51,10 +51,10 @@ services:
   single:
     profiles: ["single"]
     build: *build
-    image: gms-stress:local
+    image: hardhatdb-stress:local
     environment:
-      <<: *gms
-      GMS_MYSQL_HOST: 0.0.0.0
+      <<: *hardhatdb
+      HARDHATDB_MYSQL_HOST: 0.0.0.0
     ports:
       - "3316:3306"
     volumes:
@@ -64,7 +64,7 @@ services:
   n1:
     profiles: ["cluster"]
     build: *build
-    image: gms-stress:local
+    image: hardhatdb-stress:local
     hostname: n1
     depends_on:
       - n2
@@ -73,15 +73,15 @@ services:
       stressnet:
         ipv4_address: 10.117.0.2
     environment:
-      <<: *gms
-      GMS_NODE_ID: n1
-      GMS_RAFT_ADDR: 10.117.0.2:7001
-      GMS_RAFT_ADVERTISE: 10.117.0.2:7001
-      GMS_RAFT_PEERS: n1=10.117.0.2:7001,n2=10.117.0.3:7001,n3=10.117.0.4:7001
-      GMS_RAFT_BOOTSTRAP: "1"
-      GMS_SERVER_UUID: 22222222-2222-2222-2222-222222222222
-      GMS_RAFT_DIR: /data/raft
-      GMS_MYSQL_HOST: 10.117.0.2
+      <<: *hardhatdb
+      HARDHATDB_NODE_ID: n1
+      HARDHATDB_RAFT_ADDR: 10.117.0.2:7001
+      HARDHATDB_RAFT_ADVERTISE: 10.117.0.2:7001
+      HARDHATDB_RAFT_PEERS: n1=10.117.0.2:7001,n2=10.117.0.3:7001,n3=10.117.0.4:7001
+      HARDHATDB_RAFT_BOOTSTRAP: "1"
+      HARDHATDB_SERVER_UUID: 22222222-2222-2222-2222-222222222222
+      HARDHATDB_RAFT_DIR: /data/raft
+      HARDHATDB_MYSQL_HOST: 10.117.0.2
     ports:
       - "3326:3306"
     volumes:
@@ -91,20 +91,20 @@ services:
   n2:
     profiles: ["cluster"]
     build: *build
-    image: gms-stress:local
+    image: hardhatdb-stress:local
     hostname: n2
     networks:
       stressnet:
         ipv4_address: 10.117.0.3
     environment:
-      <<: *gms
-      GMS_NODE_ID: n2
-      GMS_RAFT_ADDR: 10.117.0.3:7001
-      GMS_RAFT_ADVERTISE: 10.117.0.3:7001
-      GMS_RAFT_PEERS: n1=10.117.0.2:7001,n2=10.117.0.3:7001,n3=10.117.0.4:7001
-      GMS_SERVER_UUID: 22222222-2222-2222-2222-222222222222
-      GMS_RAFT_DIR: /data/raft
-      GMS_MYSQL_HOST: 10.117.0.3
+      <<: *hardhatdb
+      HARDHATDB_NODE_ID: n2
+      HARDHATDB_RAFT_ADDR: 10.117.0.3:7001
+      HARDHATDB_RAFT_ADVERTISE: 10.117.0.3:7001
+      HARDHATDB_RAFT_PEERS: n1=10.117.0.2:7001,n2=10.117.0.3:7001,n3=10.117.0.4:7001
+      HARDHATDB_SERVER_UUID: 22222222-2222-2222-2222-222222222222
+      HARDHATDB_RAFT_DIR: /data/raft
+      HARDHATDB_MYSQL_HOST: 10.117.0.3
     ports:
       - "3327:3306"
     volumes:
@@ -114,20 +114,20 @@ services:
   n3:
     profiles: ["cluster"]
     build: *build
-    image: gms-stress:local
+    image: hardhatdb-stress:local
     hostname: n3
     networks:
       stressnet:
         ipv4_address: 10.117.0.4
     environment:
-      <<: *gms
-      GMS_NODE_ID: n3
-      GMS_RAFT_ADDR: 10.117.0.4:7001
-      GMS_RAFT_ADVERTISE: 10.117.0.4:7001
-      GMS_RAFT_PEERS: n1=10.117.0.2:7001,n2=10.117.0.3:7001,n3=10.117.0.4:7001
-      GMS_SERVER_UUID: 22222222-2222-2222-2222-222222222222
-      GMS_RAFT_DIR: /data/raft
-      GMS_MYSQL_HOST: 10.117.0.4
+      <<: *hardhatdb
+      HARDHATDB_NODE_ID: n3
+      HARDHATDB_RAFT_ADDR: 10.117.0.4:7001
+      HARDHATDB_RAFT_ADVERTISE: 10.117.0.4:7001
+      HARDHATDB_RAFT_PEERS: n1=10.117.0.2:7001,n2=10.117.0.3:7001,n3=10.117.0.4:7001
+      HARDHATDB_SERVER_UUID: 22222222-2222-2222-2222-222222222222
+      HARDHATDB_RAFT_DIR: /data/raft
+      HARDHATDB_MYSQL_HOST: 10.117.0.4
     ports:
       - "3328:3306"
     volumes:
@@ -247,7 +247,7 @@ services:
   r1:
     profiles: ["ranged"]
     build: *build
-    image: gms-stress:local
+    image: hardhatdb-stress:local
     hostname: r1
     depends_on:
       - r2
@@ -256,26 +256,26 @@ services:
       rangenet:
         ipv4_address: 10.119.0.2
     environment:
-      <<: *gms
-      GMS_NODE_ID: r1
-      GMS_RAFT_ADDR: 10.119.0.2:7101
-      GMS_RAFT_ADVERTISE: 10.119.0.2:7101
-      GMS_RAFT_PEERS: r1=10.119.0.2:7101,r2=10.119.0.3:7101,r3=10.119.0.4:7101
-      GMS_RAFT_BOOTSTRAP: "1"
-      GMS_FORWARD_ADDR: 10.119.0.2:7102
-      GMS_SERVER_UUID: 33333333-3333-3333-3333-333333333331
-      GMS_RAFT_DIR: /data/raft
-      GMS_SHARD_FORWARD: 0=10.119.0.2:7102,1=10.119.0.5:7102
-      GMS_META_ADDR: 10.119.0.2:7001
-      GMS_META_ADVERTISE: 10.119.0.2:7001
-      GMS_META_PEERS: r1=10.119.0.2:7001,r2=10.119.0.3:7001,r3=10.119.0.4:7001
-      GMS_META_NONVOTERS: r4=10.119.0.5:7001,r5=10.119.0.6:7001,r6=10.119.0.7:7001
-      GMS_META_BOOTSTRAP: "1"
-      GMS_META_FORWARD: 10.119.0.2:7002
-      GMS_META_UUID: 66666666-6666-6666-6666-666666666666
-      GMS_META_DATA: /data/meta
-      GMS_META_DIR: /data/meta-raft
-      GMS_MYSQL_HOST: 10.119.0.2
+      <<: *hardhatdb
+      HARDHATDB_NODE_ID: r1
+      HARDHATDB_RAFT_ADDR: 10.119.0.2:7101
+      HARDHATDB_RAFT_ADVERTISE: 10.119.0.2:7101
+      HARDHATDB_RAFT_PEERS: r1=10.119.0.2:7101,r2=10.119.0.3:7101,r3=10.119.0.4:7101
+      HARDHATDB_RAFT_BOOTSTRAP: "1"
+      HARDHATDB_FORWARD_ADDR: 10.119.0.2:7102
+      HARDHATDB_SERVER_UUID: 33333333-3333-3333-3333-333333333331
+      HARDHATDB_RAFT_DIR: /data/raft
+      HARDHATDB_SHARD_FORWARD: 0=10.119.0.2:7102,1=10.119.0.5:7102
+      HARDHATDB_META_ADDR: 10.119.0.2:7001
+      HARDHATDB_META_ADVERTISE: 10.119.0.2:7001
+      HARDHATDB_META_PEERS: r1=10.119.0.2:7001,r2=10.119.0.3:7001,r3=10.119.0.4:7001
+      HARDHATDB_META_NONVOTERS: r4=10.119.0.5:7001,r5=10.119.0.6:7001,r6=10.119.0.7:7001
+      HARDHATDB_META_BOOTSTRAP: "1"
+      HARDHATDB_META_FORWARD: 10.119.0.2:7002
+      HARDHATDB_META_UUID: 66666666-6666-6666-6666-666666666666
+      HARDHATDB_META_DATA: /data/meta
+      HARDHATDB_META_DIR: /data/meta-raft
+      HARDHATDB_MYSQL_HOST: 10.119.0.2
     ports:
       - "3376:3306"
     volumes:
@@ -285,30 +285,30 @@ services:
   r2:
     profiles: ["ranged"]
     build: *build
-    image: gms-stress:local
+    image: hardhatdb-stress:local
     hostname: r2
     networks:
       rangenet:
         ipv4_address: 10.119.0.3
     environment:
-      <<: *gms
-      GMS_NODE_ID: r2
-      GMS_RAFT_ADDR: 10.119.0.3:7101
-      GMS_RAFT_ADVERTISE: 10.119.0.3:7101
-      GMS_RAFT_PEERS: r1=10.119.0.2:7101,r2=10.119.0.3:7101,r3=10.119.0.4:7101
-      GMS_FORWARD_ADDR: 10.119.0.3:7102
-      GMS_SERVER_UUID: 33333333-3333-3333-3333-333333333331
-      GMS_RAFT_DIR: /data/raft
-      GMS_SHARD_FORWARD: 0=10.119.0.2:7102,1=10.119.0.5:7102
-      GMS_META_ADDR: 10.119.0.3:7001
-      GMS_META_ADVERTISE: 10.119.0.3:7001
-      GMS_META_PEERS: r1=10.119.0.2:7001,r2=10.119.0.3:7001,r3=10.119.0.4:7001
-      GMS_META_NONVOTERS: r4=10.119.0.5:7001,r5=10.119.0.6:7001,r6=10.119.0.7:7001
-      GMS_META_FORWARD: 10.119.0.3:7002
-      GMS_META_UUID: 66666666-6666-6666-6666-666666666666
-      GMS_META_DATA: /data/meta
-      GMS_META_DIR: /data/meta-raft
-      GMS_MYSQL_HOST: 10.119.0.3
+      <<: *hardhatdb
+      HARDHATDB_NODE_ID: r2
+      HARDHATDB_RAFT_ADDR: 10.119.0.3:7101
+      HARDHATDB_RAFT_ADVERTISE: 10.119.0.3:7101
+      HARDHATDB_RAFT_PEERS: r1=10.119.0.2:7101,r2=10.119.0.3:7101,r3=10.119.0.4:7101
+      HARDHATDB_FORWARD_ADDR: 10.119.0.3:7102
+      HARDHATDB_SERVER_UUID: 33333333-3333-3333-3333-333333333331
+      HARDHATDB_RAFT_DIR: /data/raft
+      HARDHATDB_SHARD_FORWARD: 0=10.119.0.2:7102,1=10.119.0.5:7102
+      HARDHATDB_META_ADDR: 10.119.0.3:7001
+      HARDHATDB_META_ADVERTISE: 10.119.0.3:7001
+      HARDHATDB_META_PEERS: r1=10.119.0.2:7001,r2=10.119.0.3:7001,r3=10.119.0.4:7001
+      HARDHATDB_META_NONVOTERS: r4=10.119.0.5:7001,r5=10.119.0.6:7001,r6=10.119.0.7:7001
+      HARDHATDB_META_FORWARD: 10.119.0.3:7002
+      HARDHATDB_META_UUID: 66666666-6666-6666-6666-666666666666
+      HARDHATDB_META_DATA: /data/meta
+      HARDHATDB_META_DIR: /data/meta-raft
+      HARDHATDB_MYSQL_HOST: 10.119.0.3
     ports:
       - "3377:3306"
     volumes:
@@ -318,30 +318,30 @@ services:
   r3:
     profiles: ["ranged"]
     build: *build
-    image: gms-stress:local
+    image: hardhatdb-stress:local
     hostname: r3
     networks:
       rangenet:
         ipv4_address: 10.119.0.4
     environment:
-      <<: *gms
-      GMS_NODE_ID: r3
-      GMS_RAFT_ADDR: 10.119.0.4:7101
-      GMS_RAFT_ADVERTISE: 10.119.0.4:7101
-      GMS_RAFT_PEERS: r1=10.119.0.2:7101,r2=10.119.0.3:7101,r3=10.119.0.4:7101
-      GMS_FORWARD_ADDR: 10.119.0.4:7102
-      GMS_SERVER_UUID: 33333333-3333-3333-3333-333333333331
-      GMS_RAFT_DIR: /data/raft
-      GMS_SHARD_FORWARD: 0=10.119.0.2:7102,1=10.119.0.5:7102
-      GMS_META_ADDR: 10.119.0.4:7001
-      GMS_META_ADVERTISE: 10.119.0.4:7001
-      GMS_META_PEERS: r1=10.119.0.2:7001,r2=10.119.0.3:7001,r3=10.119.0.4:7001
-      GMS_META_NONVOTERS: r4=10.119.0.5:7001,r5=10.119.0.6:7001,r6=10.119.0.7:7001
-      GMS_META_FORWARD: 10.119.0.4:7002
-      GMS_META_UUID: 66666666-6666-6666-6666-666666666666
-      GMS_META_DATA: /data/meta
-      GMS_META_DIR: /data/meta-raft
-      GMS_MYSQL_HOST: 10.119.0.4
+      <<: *hardhatdb
+      HARDHATDB_NODE_ID: r3
+      HARDHATDB_RAFT_ADDR: 10.119.0.4:7101
+      HARDHATDB_RAFT_ADVERTISE: 10.119.0.4:7101
+      HARDHATDB_RAFT_PEERS: r1=10.119.0.2:7101,r2=10.119.0.3:7101,r3=10.119.0.4:7101
+      HARDHATDB_FORWARD_ADDR: 10.119.0.4:7102
+      HARDHATDB_SERVER_UUID: 33333333-3333-3333-3333-333333333331
+      HARDHATDB_RAFT_DIR: /data/raft
+      HARDHATDB_SHARD_FORWARD: 0=10.119.0.2:7102,1=10.119.0.5:7102
+      HARDHATDB_META_ADDR: 10.119.0.4:7001
+      HARDHATDB_META_ADVERTISE: 10.119.0.4:7001
+      HARDHATDB_META_PEERS: r1=10.119.0.2:7001,r2=10.119.0.3:7001,r3=10.119.0.4:7001
+      HARDHATDB_META_NONVOTERS: r4=10.119.0.5:7001,r5=10.119.0.6:7001,r6=10.119.0.7:7001
+      HARDHATDB_META_FORWARD: 10.119.0.4:7002
+      HARDHATDB_META_UUID: 66666666-6666-6666-6666-666666666666
+      HARDHATDB_META_DATA: /data/meta
+      HARDHATDB_META_DIR: /data/meta-raft
+      HARDHATDB_MYSQL_HOST: 10.119.0.4
     ports:
       - "3378:3306"
     volumes:
@@ -351,7 +351,7 @@ services:
   r4:
     profiles: ["ranged"]
     build: *build
-    image: gms-stress:local
+    image: hardhatdb-stress:local
     hostname: r4
     depends_on:
       - r1
@@ -361,25 +361,25 @@ services:
       rangenet:
         ipv4_address: 10.119.0.5
     environment:
-      <<: *gms
-      GMS_NODE_ID: r4
-      GMS_RAFT_ADDR: 10.119.0.5:7101
-      GMS_RAFT_ADVERTISE: 10.119.0.5:7101
-      GMS_RAFT_PEERS: r4=10.119.0.5:7101,r5=10.119.0.6:7101,r6=10.119.0.7:7101
-      GMS_RAFT_BOOTSTRAP: "1"
-      GMS_FORWARD_ADDR: 10.119.0.5:7102
-      GMS_SERVER_UUID: 44444444-4444-4444-4444-444444444441
-      GMS_RAFT_DIR: /data/raft
-      GMS_SHARD_FORWARD: 0=10.119.0.2:7102,1=10.119.0.5:7102
-      GMS_META_ADDR: 10.119.0.5:7001
-      GMS_META_ADVERTISE: 10.119.0.5:7001
-      GMS_META_PEERS: r1=10.119.0.2:7001,r2=10.119.0.3:7001,r3=10.119.0.4:7001
-      GMS_META_NONVOTERS: r4=10.119.0.5:7001,r5=10.119.0.6:7001,r6=10.119.0.7:7001
-      GMS_META_FORWARD: 10.119.0.5:7002
-      GMS_META_UUID: 66666666-6666-6666-6666-666666666666
-      GMS_META_DATA: /data/meta
-      GMS_META_DIR: /data/meta-raft
-      GMS_MYSQL_HOST: 10.119.0.5
+      <<: *hardhatdb
+      HARDHATDB_NODE_ID: r4
+      HARDHATDB_RAFT_ADDR: 10.119.0.5:7101
+      HARDHATDB_RAFT_ADVERTISE: 10.119.0.5:7101
+      HARDHATDB_RAFT_PEERS: r4=10.119.0.5:7101,r5=10.119.0.6:7101,r6=10.119.0.7:7101
+      HARDHATDB_RAFT_BOOTSTRAP: "1"
+      HARDHATDB_FORWARD_ADDR: 10.119.0.5:7102
+      HARDHATDB_SERVER_UUID: 44444444-4444-4444-4444-444444444441
+      HARDHATDB_RAFT_DIR: /data/raft
+      HARDHATDB_SHARD_FORWARD: 0=10.119.0.2:7102,1=10.119.0.5:7102
+      HARDHATDB_META_ADDR: 10.119.0.5:7001
+      HARDHATDB_META_ADVERTISE: 10.119.0.5:7001
+      HARDHATDB_META_PEERS: r1=10.119.0.2:7001,r2=10.119.0.3:7001,r3=10.119.0.4:7001
+      HARDHATDB_META_NONVOTERS: r4=10.119.0.5:7001,r5=10.119.0.6:7001,r6=10.119.0.7:7001
+      HARDHATDB_META_FORWARD: 10.119.0.5:7002
+      HARDHATDB_META_UUID: 66666666-6666-6666-6666-666666666666
+      HARDHATDB_META_DATA: /data/meta
+      HARDHATDB_META_DIR: /data/meta-raft
+      HARDHATDB_MYSQL_HOST: 10.119.0.5
     ports:
       - "3379:3306"
     volumes:
@@ -389,7 +389,7 @@ services:
   r5:
     profiles: ["ranged"]
     build: *build
-    image: gms-stress:local
+    image: hardhatdb-stress:local
     hostname: r5
     depends_on:
       - r1
@@ -397,24 +397,24 @@ services:
       rangenet:
         ipv4_address: 10.119.0.6
     environment:
-      <<: *gms
-      GMS_NODE_ID: r5
-      GMS_RAFT_ADDR: 10.119.0.6:7101
-      GMS_RAFT_ADVERTISE: 10.119.0.6:7101
-      GMS_RAFT_PEERS: r4=10.119.0.5:7101,r5=10.119.0.6:7101,r6=10.119.0.7:7101
-      GMS_FORWARD_ADDR: 10.119.0.6:7102
-      GMS_SERVER_UUID: 44444444-4444-4444-4444-444444444441
-      GMS_RAFT_DIR: /data/raft
-      GMS_SHARD_FORWARD: 0=10.119.0.2:7102,1=10.119.0.5:7102
-      GMS_META_ADDR: 10.119.0.6:7001
-      GMS_META_ADVERTISE: 10.119.0.6:7001
-      GMS_META_PEERS: r1=10.119.0.2:7001,r2=10.119.0.3:7001,r3=10.119.0.4:7001
-      GMS_META_NONVOTERS: r4=10.119.0.5:7001,r5=10.119.0.6:7001,r6=10.119.0.7:7001
-      GMS_META_FORWARD: 10.119.0.6:7002
-      GMS_META_UUID: 66666666-6666-6666-6666-666666666666
-      GMS_META_DATA: /data/meta
-      GMS_META_DIR: /data/meta-raft
-      GMS_MYSQL_HOST: 10.119.0.6
+      <<: *hardhatdb
+      HARDHATDB_NODE_ID: r5
+      HARDHATDB_RAFT_ADDR: 10.119.0.6:7101
+      HARDHATDB_RAFT_ADVERTISE: 10.119.0.6:7101
+      HARDHATDB_RAFT_PEERS: r4=10.119.0.5:7101,r5=10.119.0.6:7101,r6=10.119.0.7:7101
+      HARDHATDB_FORWARD_ADDR: 10.119.0.6:7102
+      HARDHATDB_SERVER_UUID: 44444444-4444-4444-4444-444444444441
+      HARDHATDB_RAFT_DIR: /data/raft
+      HARDHATDB_SHARD_FORWARD: 0=10.119.0.2:7102,1=10.119.0.5:7102
+      HARDHATDB_META_ADDR: 10.119.0.6:7001
+      HARDHATDB_META_ADVERTISE: 10.119.0.6:7001
+      HARDHATDB_META_PEERS: r1=10.119.0.2:7001,r2=10.119.0.3:7001,r3=10.119.0.4:7001
+      HARDHATDB_META_NONVOTERS: r4=10.119.0.5:7001,r5=10.119.0.6:7001,r6=10.119.0.7:7001
+      HARDHATDB_META_FORWARD: 10.119.0.6:7002
+      HARDHATDB_META_UUID: 66666666-6666-6666-6666-666666666666
+      HARDHATDB_META_DATA: /data/meta
+      HARDHATDB_META_DIR: /data/meta-raft
+      HARDHATDB_MYSQL_HOST: 10.119.0.6
     ports:
       - "3380:3306"
     volumes:
@@ -424,7 +424,7 @@ services:
   r6:
     profiles: ["ranged"]
     build: *build
-    image: gms-stress:local
+    image: hardhatdb-stress:local
     hostname: r6
     depends_on:
       - r1
@@ -432,24 +432,24 @@ services:
       rangenet:
         ipv4_address: 10.119.0.7
     environment:
-      <<: *gms
-      GMS_NODE_ID: r6
-      GMS_RAFT_ADDR: 10.119.0.7:7101
-      GMS_RAFT_ADVERTISE: 10.119.0.7:7101
-      GMS_RAFT_PEERS: r4=10.119.0.5:7101,r5=10.119.0.6:7101,r6=10.119.0.7:7101
-      GMS_FORWARD_ADDR: 10.119.0.7:7102
-      GMS_SERVER_UUID: 44444444-4444-4444-4444-444444444441
-      GMS_RAFT_DIR: /data/raft
-      GMS_SHARD_FORWARD: 0=10.119.0.2:7102,1=10.119.0.5:7102
-      GMS_META_ADDR: 10.119.0.7:7001
-      GMS_META_ADVERTISE: 10.119.0.7:7001
-      GMS_META_PEERS: r1=10.119.0.2:7001,r2=10.119.0.3:7001,r3=10.119.0.4:7001
-      GMS_META_NONVOTERS: r4=10.119.0.5:7001,r5=10.119.0.6:7001,r6=10.119.0.7:7001
-      GMS_META_FORWARD: 10.119.0.7:7002
-      GMS_META_UUID: 66666666-6666-6666-6666-666666666666
-      GMS_META_DATA: /data/meta
-      GMS_META_DIR: /data/meta-raft
-      GMS_MYSQL_HOST: 10.119.0.7
+      <<: *hardhatdb
+      HARDHATDB_NODE_ID: r6
+      HARDHATDB_RAFT_ADDR: 10.119.0.7:7101
+      HARDHATDB_RAFT_ADVERTISE: 10.119.0.7:7101
+      HARDHATDB_RAFT_PEERS: r4=10.119.0.5:7101,r5=10.119.0.6:7101,r6=10.119.0.7:7101
+      HARDHATDB_FORWARD_ADDR: 10.119.0.7:7102
+      HARDHATDB_SERVER_UUID: 44444444-4444-4444-4444-444444444441
+      HARDHATDB_RAFT_DIR: /data/raft
+      HARDHATDB_SHARD_FORWARD: 0=10.119.0.2:7102,1=10.119.0.5:7102
+      HARDHATDB_META_ADDR: 10.119.0.7:7001
+      HARDHATDB_META_ADVERTISE: 10.119.0.7:7001
+      HARDHATDB_META_PEERS: r1=10.119.0.2:7001,r2=10.119.0.3:7001,r3=10.119.0.4:7001
+      HARDHATDB_META_NONVOTERS: r4=10.119.0.5:7001,r5=10.119.0.6:7001,r6=10.119.0.7:7001
+      HARDHATDB_META_FORWARD: 10.119.0.7:7002
+      HARDHATDB_META_UUID: 66666666-6666-6666-6666-666666666666
+      HARDHATDB_META_DATA: /data/meta
+      HARDHATDB_META_DIR: /data/meta-raft
+      HARDHATDB_MYSQL_HOST: 10.119.0.7
     ports:
       - "3381:3306"
     volumes:

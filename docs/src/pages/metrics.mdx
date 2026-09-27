@@ -1,0 +1,56 @@
+---
+title: Prometheus Metrics
+---
+
+# Prometheus Metrics
+
+Set `HARDHATDB_METRICS_ADDR` to an `host:port`. The process serves three routes there. Leave the variable unset and the port stays closed.
+
+```bash
+export HARDHATDB_METRICS_ADDR=127.0.0.1:9090
+curl http://127.0.0.1:9090/healthz
+curl http://127.0.0.1:9090/readyz
+curl http://127.0.0.1:9090/metrics
+```
+
+`/healthz` returns `200` once the listener is up. `/readyz` returns `200` when the store is ready and `503` otherwise.
+
+## Series
+
+The exposition format is Prometheus text. Counts have no labels. The role series has one label.
+
+| Metric | Type | Labels | Description |
+|--------|------|--------|-------------|
+| `hardhatdb_queries_total` | Counter | — | Queries accepted by the server |
+| `hardhatdb_query_errors_total` | Counter | — | Queries that returned an error |
+| `hardhatdb_raft_commit_index` | Gauge | — | Raft commit index on this node |
+| `hardhatdb_raft_applied_index` | Gauge | — | Raft index applied on this node |
+| `hardhatdb_raft_lag` | Gauge | — | Commit index minus applied index |
+| `hardhatdb_raft_role` | Gauge | `role` | `1` for this node's role (`leader`, `follower`, `candidate`, or `standalone`) |
+
+A standalone process still exports the Raft series. The role is `standalone` and the indexes stay at zero.
+
+## Scrape configuration
+
+```yaml
+scrape_configs:
+  - job_name: hardhatdb
+    static_configs:
+      - targets: ['10.116.0.2:9090', '10.116.0.3:9090', '10.116.0.4:9090']
+    scrape_interval: 15s
+```
+
+Bind `HARDHATDB_METRICS_ADDR` on an address the scraper can reach. The MySQL and Raft ports are separate.
+
+## Example queries
+
+```promql
+# Nodes that are behind the commit index
+hardhatdb_raft_lag > 0
+
+# Query error ratio
+rate(hardhatdb_query_errors_total[5m]) / rate(hardhatdb_queries_total[5m])
+
+# Which node is leader
+hardhatdb_raft_role{role="leader"} == 1
+```

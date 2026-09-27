@@ -8,13 +8,13 @@ import (
 
 func TestParseUsageSumsClusterSamples(t *testing.T) {
 	stats := "" +
-		"gms-stress-n1-1 10.0% 40MiB / 8GiB\n" +
-		"gms-stress-n2-1 2.0% 20MiB / 8GiB\n" +
-		"gms-stress-n1-1 30.0% 50MiB / 8GiB\n" +
-		"gms-stress-n2-1 4.0% 22MiB / 8GiB\n"
+		"hardhatdb-stress-n1-1 10.0% 40MiB / 8GiB\n" +
+		"hardhatdb-stress-n2-1 2.0% 20MiB / 8GiB\n" +
+		"hardhatdb-stress-n1-1 30.0% 50MiB / 8GiB\n" +
+		"hardhatdb-stress-n2-1 4.0% 22MiB / 8GiB\n"
 	disk := "" +
-		"gms-stress-n1-1 1000\n" +
-		"gms-stress-n2-1 3000\n"
+		"hardhatdb-stress-n1-1 1000\n" +
+		"hardhatdb-stress-n2-1 3000\n"
 	got := parseUsage(stats, disk)
 	if got.Samples != 2 {
 		t.Fatalf("samples %d", got.Samples)

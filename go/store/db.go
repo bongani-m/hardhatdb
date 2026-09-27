@@ -44,7 +44,7 @@ func Open(path string, syncWrites bool) (*DB, error) {
 func openBadger(path string, syncWrites bool) (*badger.DB, error) {
 	info, err := os.Stat(path)
 	if err == nil && !info.IsDir() {
-		return nil, fmt.Errorf("persist: %s is a file, not a Badger directory (bbolt files are not migrated)", path)
+		return nil, fmt.Errorf("hardhatdb: %s is a file, not a Badger directory (bbolt files are not migrated)", path)
 	}
 	if err != nil && !os.IsNotExist(err) {
 		return nil, err

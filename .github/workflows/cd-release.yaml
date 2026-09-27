@@ -32,10 +32,10 @@ jobs:
             goos: darwin
             goarch: amd64
     steps:
-      - name: Check out persist
+      - name: Check out HardhatDB
         uses: actions/checkout@v4
         with:
-          path: persist
+          path: hardhatdb
 
       - name: Check out go-mysql-server
         uses: actions/checkout@v4
@@ -67,21 +67,21 @@ jobs:
           fi
 
       - name: Build
-        working-directory: persist/go
+        working-directory: hardhatdb/go
         env:
           CGO_ENABLED: "1"
           GOOS: ${{ matrix.goos }}
           GOARCH: ${{ matrix.goarch }}
         run: |
-          go build -o "persist-${GOOS}-${GOARCH}" \
-            -ldflags "-X github.com/bongani-m/persist/go/cmd/persist/version.Version=${{ inputs.version }}" \
-            ./cmd/persist
+          go build -o "hardhatdb-${GOOS}-${GOARCH}" \
+            -ldflags "-X github.com/bongani-m/hardhatdb/go/cmd/hardhatdb/version.Version=${{ inputs.version }}" \
+            ./cmd/hardhatdb
 
       - name: Upload binary
         uses: actions/upload-artifact@v4
         with:
-          name: persist-${{ matrix.goos }}-${{ matrix.goarch }}
-          path: persist/go/persist-${{ matrix.goos }}-${{ matrix.goarch }}
+          name: hardhatdb-${{ matrix.goos }}-${{ matrix.goarch }}
+          path: hardhatdb/go/hardhatdb-${{ matrix.goos }}-${{ matrix.goarch }}
 
   release:
     name: GitHub release
@@ -91,7 +91,7 @@ jobs:
       - name: Download binaries
         uses: actions/download-artifact@v4
         with:
-          pattern: persist-*
+          pattern: hardhatdb-*
           merge-multiple: true
           path: dist
 
@@ -99,19 +99,19 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          gh release create "${{ inputs.version }}" dist/persist-* \
+          gh release create "${{ inputs.version }}" dist/hardhatdb-* \
             --repo "${{ github.repository }}" \
             --title "${{ inputs.version }}" \
-            --notes "persist ${{ inputs.version }}"
+            --notes "HardhatDB ${{ inputs.version }}"
 
   image:
     name: Docker image
     runs-on: ubuntu-latest
     steps:
-      - name: Check out persist
+      - name: Check out HardhatDB
         uses: actions/checkout@v4
         with:
-          path: persist
+          path: hardhatdb
 
       - name: Check out go-mysql-server
         uses: actions/checkout@v4
@@ -120,11 +120,11 @@ jobs:
           path: go-mysql-server
 
       - name: Build image
-        working-directory: persist
+        working-directory: hardhatdb
         run: |
           docker build -f docker/Dockerfile \
-            --build-context gms=../go-mysql-server \
-            -t "gms-persist:${{ inputs.version }}" .
+            --build-context go-mysql-server=../go-mysql-server \
+            -t "hardhatdb:${{ inputs.version }}" .
 
       - name: Push image
         env:
@@ -137,5 +137,5 @@ jobs:
             exit 0
           fi
           echo "$REGISTRY_TOKEN" | docker login "$REGISTRY" -u "$REGISTRY_USERNAME" --password-stdin
-          docker tag "gms-persist:${{ inputs.version }}" "$REGISTRY/gms-persist:${{ inputs.version }}"
-          docker push "$REGISTRY/gms-persist:${{ inputs.version }}"
+          docker tag "hardhatdb:${{ inputs.version }}" "$REGISTRY/hardhatdb:${{ inputs.version }}"
+          docker push "$REGISTRY/hardhatdb:${{ inputs.version }}"

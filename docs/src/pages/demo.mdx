@@ -1,0 +1,88 @@
+---
+title: Local Cluster Demo
+---
+
+# Local Cluster Demo
+
+This starts the three-node Compose cluster, then reads the example table from the leader and from a follower.
+
+## Prerequisites
+
+- Docker
+- The `mysql` client
+- `openssl`
+
+Create the test CA and server certificate before the first `up`. They are not committed. Compose mounts `certs` at `/certs`, and Raft reads `ca.crt`, `server.crt`, and `server.key` from there. Without `ca.crt` each node logs `open /certs/ca.crt: no such file or directory` and exits, and Compose restarts it.
+
+The server certificate is signed by that CA, carries `serverAuth` and `clientAuth`, and names the addresses clients dial: `127.0.0.1` from the host, the node names, and the private addresses Compose assigns.
+
+```bash
+mkdir -p certs
+openssl req -x509 -newkey rsa:2048 -nodes \
+  -keyout certs/ca.key \
+  -out certs/ca.crt \
+  -days 365 \
+  -subj "/CN=hardhatdb-ca" \
+  -addext "basicConstraints=critical,CA:TRUE" \
+  -addext "keyUsage=critical,keyCertSign,cRLSign"
+openssl req -newkey rsa:2048 -nodes \
+  -keyout certs/server.key \
+  -out certs/server.csr \
+  -subj "/CN=hardhatdb" \
+  -addext "subjectAltName=DNS:localhost,DNS:n1,DNS:n2,DNS:n3,IP:127.0.0.1,IP:10.116.0.2,IP:10.116.0.3,IP:10.116.0.4" \
+  -addext "extendedKeyUsage=serverAuth,clientAuth"
+openssl x509 -req -in certs/server.csr \
+  -CA certs/ca.crt -CAkey certs/ca.key -CAcreateserial \
+  -out certs/server.crt -days 365 \
+  -copy_extensions copy
+docker compose up --build
+```
+
+A stack that is already restarting picks the files up after `docker compose restart`. A volume created before these addresses still has the old Raft peer list. Remove it first: `docker compose down -v`.
+
+## Ports
+
+| Node | Host port | VPC address |
+|------|-----------|-------------|
+| n1 | 3306 | 10.116.0.2 |
+| n2 | 3307 | 10.116.0.3 |
+| n3 | 3308 | 10.116.0.4 |
+
+`n1` bootstraps the Raft group. `n2` and `n3` join it. Raft on port 7001 and the write-forward port 7002 stay on the `vpc` network and are not published to the host. Compose sets `HARDHATDB_BOOTSTRAP_PASSWORD` to `dev-only-change-me` unless you override it. That value is used only when a node has no accounts yet. `HARDHATDB_SEED_EXAMPLE=1` creates `mydb.mytable`.
+
+## Check the leader, then a follower
+
+```bash
+mysql --host=127.0.0.1 --port=3306 --user=root --password=dev-only-change-me \
+  --ssl-mode=REQUIRED --ssl-ca=certs/ca.crt \
+  mydb --execute="SELECT name, email FROM mytable;"
+mysql --host=127.0.0.1 --port=3307 --user=root --password=dev-only-change-me \
+  --ssl-mode=REQUIRED --ssl-ca=certs/ca.crt \
+  mydb --execute="SELECT name, email FROM mytable;"
+```
+
+Writes succeed on the leader. A write to port 3307 or 3308 is forwarded. Ask any node who the leader is:
+
+```bash
+mysql --host=127.0.0.1 --port=3308 --user=root --password=dev-only-change-me \
+  --ssl-mode=REQUIRED --ssl-ca=certs/ca.crt \
+  --execute="SHOW RAFT STATUS;"
+```
+
+## Clients
+
+Example apps take every published address. A broken connection tries the next one:
+
+```bash
+MYSQL_ADDRS=127.0.0.1:3306,127.0.0.1:3307,127.0.0.1:3308
+```
+
+The example clients trust `certs/ca.crt` unless `MYSQL_TLS_CA` is set. `MYSQL_TLS_CA=off` connects without TLS.
+
+## Stop
+
+```bash
+docker compose down
+```
+
+`docker compose down -v` also deletes the data volumes.

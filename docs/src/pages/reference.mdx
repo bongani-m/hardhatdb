@@ -1,0 +1,81 @@
+---
+title: Reference
+---
+
+# Configuration Reference
+
+HardhatDB is configured with environment variables. There is no config file. Cluster mode stays off unless `HARDHATDB_RAFT_ADDR` is set.
+
+Run the server from the `go` directory:
+
+```bash
+go run ./cmd/hardhatdb sql-server
+```
+
+## Data and MySQL
+
+| Variable | Role |
+|----------|------|
+| `HARDHATDB_DATA` | Badger directory. Default `data/hardhatdb`. |
+| `HARDHATDB_MYSQL_HOST` | MySQL bind address. Default `localhost`. Use `0.0.0.0` for one published container. The three-node compose file binds each node's private address. |
+| `HARDHATDB_MYSQL_PORT` | MySQL port. Default `3306`. |
+| `HARDHATDB_TLS_CERT` | PEM certificate for the MySQL listener. Set together with `HARDHATDB_TLS_KEY` to require TLS. |
+| `HARDHATDB_TLS_KEY` | PEM private key for the MySQL listener. |
+| `HARDHATDB_MAX_CONNECTIONS` | Listener connection cap. Default `151`. |
+| `HARDHATDB_NET_READ_TIMEOUT` | Connection read timeout. Unset means no socket deadline. A bare number is seconds. |
+| `HARDHATDB_NET_WRITE_TIMEOUT` | Connection write timeout. Unset means no socket deadline. A bare number is seconds. |
+| `HARDHATDB_MAX_EXECUTION_TIME` | Per-statement deadline in milliseconds. Default `0`, which sets no deadline. |
+| `HARDHATDB_SHUTDOWN_TIMEOUT` | How long `SIGTERM` waits for sessions before closing the store. Default `15s`. |
+| `HARDHATDB_METRICS_ADDR` | Optional `host:port` for `/healthz`, `/readyz`, and `/metrics`. Unset means those routes are not served. |
+| `HARDHATDB_SEED_EXAMPLE` | `1` creates `mydb.mytable` and the example rows when they are missing. Default is off. |
+
+## Accounts
+
+| Variable | Role |
+|----------|------|
+| `HARDHATDB_BOOTSTRAP_PASSWORD` | Password for the first account. Required on the first boot of a standalone process or the Raft leader. Ignored once accounts are stored. |
+| `HARDHATDB_BOOTSTRAP_USER` | First account name. Default `root`. |
+| `HARDHATDB_BOOTSTRAP_HOST` | Host pattern for that account. Default `%`. |
+
+## Raft
+
+| Variable | Role |
+|----------|------|
+| `HARDHATDB_RAFT_ADDR` | Turns cluster mode on and sets the Raft bind address, such as `10.116.0.2:7001`. `0.0.0.0` listens on every interface. A non-loopback address requires the three TLS variables below. |
+| `HARDHATDB_RAFT_TLS_CERT` | PEM certificate for Raft and the write-forward port. It needs `serverAuth` and `clientAuth`. |
+| `HARDHATDB_RAFT_TLS_KEY` | PEM private key for that certificate. |
+| `HARDHATDB_RAFT_TLS_CA` | PEM CA that signed the certificate. Peers present the certificate and verify it with this CA. |
+| `HARDHATDB_FORWARD_ADDR` | Write-forward listen address. The default is port 7002 on the Raft advertise host. |
+| `HARDHATDB_RAFT_ADVERTISE` | Address other nodes dial. Defaults to `HARDHATDB_RAFT_ADDR`. |
+| `HARDHATDB_NODE_ID` | Raft server id. Defaults to the bind address. |
+| `HARDHATDB_RAFT_PEERS` | `id=host:port` list, comma-separated. |
+| `HARDHATDB_RAFT_BOOTSTRAP` | `1` on exactly one node, the first time the group starts. A restart that still has Raft state ignores the flag and joins as a follower. |
+| `HARDHATDB_RAFT_DIR` | Raft log, snapshots, server UUID, and binlog. Default is beside the data directory. |
+| `HARDHATDB_SERVER_UUID` | Shared by every node. It is the GTID server id in the binlog. |
+| `HARDHATDB_BINLOG_MAX_SIZE` | Rolls the binlog after a transaction crosses this many bytes. Default is 1 GiB. `FLUSH BINARY LOGS` rolls it immediately. |
+
+## Upstream replica
+
+| Variable | Role |
+|----------|------|
+| `HARDHATDB_SOURCE_HOST` | Upstream MySQL host. When set, the current primary replicates from it. Set the same value on every node. |
+| `HARDHATDB_SOURCE_PORT` | Upstream MySQL port. Default `3306`. |
+| `HARDHATDB_SOURCE_USER` | Upstream MySQL user. |
+| `HARDHATDB_SOURCE_PASSWORD` | Upstream MySQL password. It stays in a local file beside the Raft directory. |
+
+`CHANGE REPLICATION SOURCE TO`, `START REPLICA`, and `STOP REPLICA` configure that job after start. See [Replication](/replication).
+
+## Sharding
+
+| Variable | Role |
+|----------|------|
+| `HARDHATDB_META_ADDR` | Turns the meta catalog on. Raft address of this node's meta group. |
+| `HARDHATDB_META_PEERS` | Meta voters, `id=host:port`, comma-separated. |
+| `HARDHATDB_META_NONVOTERS` | Meta replicas that copy the catalog and do not vote. |
+| `HARDHATDB_META_BOOTSTRAP` | `1` on one meta voter, the first time the group starts. |
+| `HARDHATDB_META_DATA` | Badger directory for the catalog. Default `data/meta`. |
+| `HARDHATDB_META_DIR` | Raft directory for the catalog. Default `data/meta-raft`. |
+| `HARDHATDB_META_FORWARD` | Meta write-forward address. |
+| `HARDHATDB_SHARD_FORWARD` | `index=host:port` for one member of each data group. |
+
+`SHARD TABLE` syntax is in [Sharding](/sharding).

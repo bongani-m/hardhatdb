@@ -1,0 +1,72 @@
+---
+title: SQL Reference
+---
+
+# SQL Reference
+
+Ordinary SQL is the MySQL dialect accepted by go-mysql-server. This page is the statements HardhatDB adds, plus the replication statements it implements itself.
+
+## Raft status
+
+```sql
+SHOW RAFT STATUS;
+```
+
+One row:
+
+| Column | Meaning |
+|--------|---------|
+| `role` | `leader`, `follower`, `candidate`, or `standalone` |
+| `leader` | Leader address. Empty when this process is standalone |
+| `commit_index` | Raft commit index |
+| `applied_index` | Index applied on this node |
+| `lag` | `commit_index - applied_index` on this node |
+
+The statement runs locally. On a follower, `lag` is how far that node is behind the commit index.
+
+## Membership
+
+Both statements are leader operations. A follower forwards them. They fail when the process is not replicating.
+
+```sql
+RAFT ADD VOTER 'n4' '10.116.0.5:7001';
+RAFT REMOVE SERVER 'n4';
+```
+
+The voter id is the Raft server id (`HARDHATDB_NODE_ID`). The address is the Raft advertise address, `host:port`.
+
+## Binlog
+
+```sql
+FLUSH BINARY LOGS;
+```
+
+On the leader, this rolls every node's binlog together.
+
+## Upstream replica
+
+```sql
+CHANGE REPLICATION SOURCE TO
+  SOURCE_HOST = 'mysql.example',
+  SOURCE_PORT = 3306,
+  SOURCE_USER = 'repl',
+  SOURCE_PASSWORD = 'secret',
+  SOURCE_AUTO_POSITION = 1;
+
+START REPLICA;
+STOP REPLICA;
+```
+
+Accepted source options are `SOURCE_HOST`, `SOURCE_USER`, `SOURCE_PASSWORD`, `SOURCE_PORT`, and `SOURCE_AUTO_POSITION`. Auto-position has to stay on. The current primary is the only node that connects. `REPLICATE_REWRITE_DB` is rejected.
+
+## Sharding
+
+```sql
+SHARD TABLE db.table BY column [CHECK column]
+  RANGE [START n] [END n]
+  [GROUP id PEER id raft-addr forward-addr ...];
+```
+
+`START` and `END` are exclusive integer bounds. A statement with no `RANGE` is recognized and then rejected. Each `PEER` is a member id, a Raft address, and a write-forward address. Without `GROUP`, the range covers this process's data group.
+
+A sharded insert includes the shard column. One statement stays on one range. A read that does not name the shard column is sent to every range that holds the table.

@@ -58,7 +58,7 @@ func summaryMarkdown(reps []rendered) string {
 	if anyUsage(reps) {
 		b.WriteString("CPU and memory are sampled about once a second while the client runs, including seed and warmup. ")
 		b.WriteString("100% CPU is one core. A cluster figure is the sum of its nodes. ")
-		b.WriteString("Disk is the data directory after the run: `/data` on a persist node (Badger plus the Raft log) and `/var/lib/mysql` on MySQL. ")
+		b.WriteString("Disk is the data directory after the run: `/data` on a hardhatdb node (Badger plus the Raft log) and `/var/lib/mysql` on MySQL. ")
 		b.WriteString("TiDB disk is the sum of the TiKV data directories.\n\n")
 	}
 
@@ -447,7 +447,7 @@ func fmtBytes(n float64) string {
 
 func shortContainer(name string) string {
 	name = strings.TrimPrefix(name, "/")
-	name = strings.TrimPrefix(name, "gms-stress-")
+	name = strings.TrimPrefix(name, "hardhatdb-stress-")
 	name = strings.TrimSuffix(name, "-1")
 	return name
 }

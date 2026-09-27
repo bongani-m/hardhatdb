@@ -1,0 +1,37 @@
+---
+title: Compatibility
+---
+
+# Compatibility
+
+HardhatDB speaks the MySQL wire protocol. SQL runs in go-mysql-server and the rows are stored in Badger. Use any client that can talk to MySQL: the `mysql` CLI, drivers, and GUI tools.
+
+## What matches MySQL
+
+| Area | Behavior |
+|------|----------|
+| Protocol | MySQL wire protocol on `HARDHATDB_MYSQL_PORT` (default 3306) |
+| Accounts | One `mysql_native_password` account, created on first boot |
+| TLS | Optional. Set `HARDHATDB_TLS_CERT` and `HARDHATDB_TLS_KEY` together to require it |
+| Transactions | `BEGIN` / `COMMIT` / `ROLLBACK`. In a cluster, an explicit transaction is forwarded as a whole |
+| Binlog | GTID stream, `FLUSH BINARY LOGS`, replica from an upstream MySQL source |
+| Reads on a follower | Served locally. They can lag the leader. The connection that just wrote waits for that commit |
+
+## What is HardhatDB-specific
+
+These statements are not part of the MySQL grammar. The server recognizes them before the SQL parser runs. See [SQL Reference](/sql-reference).
+
+| Statement | Where it runs |
+|-----------|----------------|
+| `SHOW RAFT STATUS` | Locally, including on a follower |
+| `RAFT ADD VOTER` | Leader. A follower forwards it |
+| `RAFT REMOVE SERVER` | Leader. A follower forwards it |
+| `SHARD TABLE ... RANGE` | Meta group, when `HARDHATDB_META_ADDR` is set |
+
+## What does not follow MySQL
+
+- `SET GLOBAL max_connections` does not resize the listener. The cap is `HARDHATDB_MAX_CONNECTIONS`, read at start. The same is true of the net timeouts.
+- `SOURCE_AUTO_POSITION` cannot be disabled.
+- `REPLICATE_REWRITE_DB` is rejected.
+- A follower that has not received the bootstrap account yet rejects every login.
+- Raft admin statements fail on a standalone process, except `SHOW RAFT STATUS`, which reports `standalone`.

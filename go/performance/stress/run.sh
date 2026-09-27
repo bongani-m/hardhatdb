@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Run the same workload against one persist node, the three-node cluster, MySQL, or TiDB.
+# Run the same workload against one hardhatdb node, the three-node cluster, MySQL, or TiDB.
 #
 # From this repo:
 #
@@ -20,7 +20,7 @@
 # KEEP=1 leaves the containers up after the run.
 # Wipe stored data with:
 #
-#   docker compose -f go/performance/stress/compose.yaml -p gms-stress down -v
+#   docker compose -f go/performance/stress/compose.yaml -p hardhatdb-stress down -v
 #
 # Ports: single 3316, cluster 3326 3327 3328, MySQL 3336, TiDB 3346, ranged 3376-3381.
 # The cluster client writes to whichever node is the Raft leader.
@@ -33,7 +33,7 @@ set -euo pipefail
 dir=$(cd "$(dirname "$0")" && pwd)
 repo=$(cd "$dir/../../.." && pwd)
 root=$(cd "$repo/go" && pwd)
-compose=(docker compose -f "$dir/compose.yaml" -p gms-stress)
+compose=(docker compose -f "$dir/compose.yaml" -p hardhatdb-stress)
 summary=""
 results=$dir/results
 json_files=()
@@ -52,13 +52,13 @@ if [[ ! -f "$tls_ca" || ! -f "$dir/certs/server.crt" || ! -f "$dir/certs/server.
 		-keyout "$dir/certs/ca.key" \
 		-out "$tls_ca" \
 		-days 365 \
-		-subj "/CN=gms-stress-ca" \
+		-subj "/CN=hardhatdb-ca" \
 		-addext "basicConstraints=critical,CA:TRUE" \
 		-addext "keyUsage=critical,keyCertSign,cRLSign"
 	openssl req -newkey rsa:2048 -nodes \
 		-keyout "$dir/certs/server.key" \
 		-out "$dir/certs/server.csr" \
-		-subj "/CN=gms-stress" \
+		-subj "/CN=hardhatdb" \
 		-addext "subjectAltName=DNS:localhost,DNS:r1,DNS:r2,DNS:r3,DNS:r4,DNS:r5,DNS:r6,IP:127.0.0.1,IP:10.117.0.2,IP:10.117.0.3,IP:10.117.0.4,IP:10.119.0.2,IP:10.119.0.3,IP:10.119.0.4,IP:10.119.0.5,IP:10.119.0.6,IP:10.119.0.7" \
 		-addext "extendedKeyUsage=serverAuth,clientAuth"
 	openssl x509 -req -in "$dir/certs/server.csr" \
@@ -125,16 +125,16 @@ prepare_tidb() {
 	local network
 	local deadline=$((SECONDS + 30))
 	while (( SECONDS < deadline )); do
-		if docker inspect gms-stress-tidb-1 >/dev/null 2>&1; then
+		if docker inspect hardhatdb-stress-tidb-1 >/dev/null 2>&1; then
 			break
 		fi
 		sleep 1
 	done
-	if ! docker inspect gms-stress-tidb-1 >/dev/null 2>&1; then
+	if ! docker inspect hardhatdb-stress-tidb-1 >/dev/null 2>&1; then
 		echo "tidb container did not start" >&2
 		exit 1
 	fi
-	network=$(docker inspect -f '{{range $k, $v := .NetworkSettings.Networks}}{{$k}} {{end}}' gms-stress-tidb-1 | awk '{print $1}')
+	network=$(docker inspect -f '{{range $k, $v := .NetworkSettings.Networks}}{{$k}} {{end}}' hardhatdb-stress-tidb-1 | awk '{print $1}')
 	if [[ -z "$network" ]]; then
 		echo "tidb container has no network" >&2
 		exit 1
@@ -171,11 +171,11 @@ run_client() {
 
 containers_for() {
 	case "$1" in
-	single) echo gms-stress-single-1 ;;
-	cluster | failover) echo gms-stress-n1-1 gms-stress-n2-1 gms-stress-n3-1 ;;
-	ranged) echo gms-stress-r1-1 gms-stress-r2-1 gms-stress-r3-1 gms-stress-r4-1 gms-stress-r5-1 gms-stress-r6-1 ;;
-	mysql) echo gms-stress-mysql-1 ;;
-	tidb) echo gms-stress-pd-1 gms-stress-tikv1-1 gms-stress-tikv2-1 gms-stress-tikv3-1 gms-stress-tidb-1 ;;
+	single) echo hardhatdb-stress-single-1 ;;
+	cluster | failover) echo hardhatdb-stress-n1-1 hardhatdb-stress-n2-1 hardhatdb-stress-n3-1 ;;
+	ranged) echo hardhatdb-stress-r1-1 hardhatdb-stress-r2-1 hardhatdb-stress-r3-1 hardhatdb-stress-r4-1 hardhatdb-stress-r5-1 hardhatdb-stress-r6-1 ;;
+	mysql) echo hardhatdb-stress-mysql-1 ;;
+	tidb) echo hardhatdb-stress-pd-1 hardhatdb-stress-tikv1-1 hardhatdb-stress-tikv2-1 hardhatdb-stress-tikv3-1 hardhatdb-stress-tidb-1 ;;
 	*) return 1 ;;
 	esac
 }
@@ -183,7 +183,7 @@ containers_for() {
 # Disk for TiDB is the TiKV data directories. PD and the SQL server hold no table data.
 disk_containers_for() {
 	case "$1" in
-	tidb) echo gms-stress-tikv1-1 gms-stress-tikv2-1 gms-stress-tikv3-1 ;;
+	tidb) echo hardhatdb-stress-tikv1-1 hardhatdb-stress-tikv2-1 hardhatdb-stress-tikv3-1 ;;
 	*) containers_for "$1" ;;
 	esac
 }
@@ -253,13 +253,13 @@ run_target() {
 	set +e
 	case "$name" in
 	single)
-		run_client gms-single -write 127.0.0.1:3316 -tls-ca "$tls_ca" -json "$json" | tee -a "$log"
+		run_client hardhatdb-single -write 127.0.0.1:3316 -tls-ca "$tls_ca" -json "$json" | tee -a "$log"
 		;;
 	cluster)
 		local leader_port read_csv
 		leader_port=$(cluster_leader_port)
 		read_csv=$(cluster_read_addrs "$leader_port")
-		run_client gms-cluster -write "127.0.0.1:$leader_port" -read "$read_csv" -tls-ca "$tls_ca" -json "$json" | tee -a "$log"
+		run_client hardhatdb-cluster -write "127.0.0.1:$leader_port" -read "$read_csv" -tls-ca "$tls_ca" -json "$json" | tee -a "$log"
 		;;
 	mysql)
 		run_client mysql -write 127.0.0.1:3336 -tls-ca "$tls_ca" -json "$json" | tee -a "$log"
@@ -273,7 +273,7 @@ run_target() {
 		w1=$(shard_leader_port 3379 3380 3381)
 		r0=$(shard_read_addrs "$w0" 3376 3377 3378)
 		r1=$(shard_read_addrs "$w1" 3379 3380 3381)
-		run_client gms-ranged \
+		run_client hardhatdb-ranged \
 			-shard-write "127.0.0.1:$w0,127.0.0.1:$w1" \
 			-shard-read "$r0,$r1" \
 			-tls-ca "$tls_ca" -json "$json" | tee -a "$log"
@@ -394,15 +394,15 @@ stress_exec() {
 # node_for maps a Raft advertise address to the container and the host MySQL port.
 node_for() {
 	case "$1" in
-	10.117.0.2:7001) echo gms-stress-n1-1 3326 ;;
-	10.117.0.3:7001) echo gms-stress-n2-1 3327 ;;
-	10.117.0.4:7001) echo gms-stress-n3-1 3328 ;;
-	10.119.0.2:7101) echo gms-stress-r1-1 3376 ;;
-	10.119.0.3:7101) echo gms-stress-r2-1 3377 ;;
-	10.119.0.4:7101) echo gms-stress-r3-1 3378 ;;
-	10.119.0.5:7101) echo gms-stress-r4-1 3379 ;;
-	10.119.0.6:7101) echo gms-stress-r5-1 3380 ;;
-	10.119.0.7:7101) echo gms-stress-r6-1 3381 ;;
+	10.117.0.2:7001) echo hardhatdb-stress-n1-1 3326 ;;
+	10.117.0.3:7001) echo hardhatdb-stress-n2-1 3327 ;;
+	10.117.0.4:7001) echo hardhatdb-stress-n3-1 3328 ;;
+	10.119.0.2:7101) echo hardhatdb-stress-r1-1 3376 ;;
+	10.119.0.3:7101) echo hardhatdb-stress-r2-1 3377 ;;
+	10.119.0.4:7101) echo hardhatdb-stress-r3-1 3378 ;;
+	10.119.0.5:7101) echo hardhatdb-stress-r4-1 3379 ;;
+	10.119.0.6:7101) echo hardhatdb-stress-r5-1 3380 ;;
+	10.119.0.7:7101) echo hardhatdb-stress-r6-1 3381 ;;
 	*) return 1 ;;
 	esac
 }
@@ -440,7 +440,7 @@ run_failover() {
 	fi
 	start_sampler failover
 	set +e
-	run_client gms-failover \
+	run_client hardhatdb-failover \
 		-write "127.0.0.1:$write_port" \
 		-read "127.0.0.1:$read_port" \
 		-tls-ca "$tls_ca" \

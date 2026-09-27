@@ -76,7 +76,7 @@ func EncodeSchema(ctx *sql.Context, sch sql.PrimaryKeySchema, collation sql.Coll
 	pk := make(map[int]bool, len(ordinals))
 	for _, ord := range ordinals {
 		if ord < 0 || ord >= len(sch.Schema) {
-			return nil, fmt.Errorf("persist: primary key ordinal %d is outside the schema", ord)
+			return nil, fmt.Errorf("hardhatdb: primary key ordinal %d is outside the schema", ord)
 		}
 		pk[ord] = true
 	}
@@ -90,7 +90,7 @@ func EncodeSchema(ctx *sql.Context, sch sql.PrimaryKeySchema, collation sql.Coll
 	for i, col := range sch.Schema {
 		typeName := col.Type.String()
 		if _, err := ParseSQLType(typeName); err != nil {
-			return nil, fmt.Errorf("persist: column %s type %q: %w", col.Name, typeName, err)
+			return nil, fmt.Errorf("hardhatdb: column %s type %q: %w", col.Name, typeName, err)
 		}
 		stored.Columns[i] = storedColumn{
 			Name:          col.Name,
@@ -116,12 +116,12 @@ func EncodeSchema(ctx *sql.Context, sch sql.PrimaryKeySchema, collation sql.Coll
 func DecodeSchema(raw []byte, dbName, tableName string) (TableMeta, error) {
 	var stored storedTable
 	if err := json.Unmarshal(raw, &stored); err != nil {
-		return TableMeta{}, fmt.Errorf("persist: schema for %s.%s: %w", dbName, tableName, err)
+		return TableMeta{}, fmt.Errorf("hardhatdb: schema for %s.%s: %w", dbName, tableName, err)
 	}
 	pk := make(map[int]bool, len(stored.PkOrdinals))
 	for _, ord := range stored.PkOrdinals {
 		if ord < 0 || ord >= len(stored.Columns) {
-			return TableMeta{}, fmt.Errorf("persist: primary key ordinal %d is outside %s.%s", ord, dbName, tableName)
+			return TableMeta{}, fmt.Errorf("hardhatdb: primary key ordinal %d is outside %s.%s", ord, dbName, tableName)
 		}
 		pk[ord] = true
 	}
@@ -130,7 +130,7 @@ func DecodeSchema(raw []byte, dbName, tableName string) (TableMeta, error) {
 	for i, col := range stored.Columns {
 		typ, err := ParseSQLType(col.Type)
 		if err != nil {
-			return TableMeta{}, fmt.Errorf("persist: column %s.%s.%s type %q: %w", dbName, tableName, col.Name, col.Type, err)
+			return TableMeta{}, fmt.Errorf("hardhatdb: column %s.%s.%s type %q: %w", dbName, tableName, col.Name, col.Type, err)
 		}
 		typ = RestoreTypeCollation(typ)
 		if col.DefinedSRID {
@@ -224,7 +224,7 @@ func DecodeTime(raw string) (time.Time, error) {
 	n, err := fmt.Sscanf(raw, "%d %d %d %d %d %d %d", &year, &month, &day, &hour, &minute, &second, &nsec)
 	if err != nil || n != 7 {
 		if err == nil {
-			err = fmt.Errorf("persist: time %q", raw)
+			err = fmt.Errorf("hardhatdb: time %q", raw)
 		}
 		return time.Time{}, err
 	}
@@ -291,7 +291,7 @@ const rowFormatBinary byte = 1
 
 func EncodeRow(ctx context.Context, schema sql.Schema, row sql.Row) ([]byte, error) {
 	if schema != nil && len(schema) != len(row) {
-		return nil, fmt.Errorf("persist: row has %d values for %d columns", len(row), len(schema))
+		return nil, fmt.Errorf("hardhatdb: row has %d values for %d columns", len(row), len(schema))
 	}
 	n := len(row)
 	bitmap := make([]byte, (n+7)/8)
@@ -328,18 +328,18 @@ func EncodeRowJSON(ctx context.Context, row sql.Row) ([]byte, error) {
 
 func DecodeRow(ctx context.Context, schema sql.Schema, raw []byte) (sql.Row, error) {
 	if len(raw) == 0 {
-		return nil, fmt.Errorf("persist: row is empty")
+		return nil, fmt.Errorf("hardhatdb: row is empty")
 	}
 	if raw[0] == '[' {
 		return DecodeRowJSON(ctx, schema, raw)
 	}
 	if raw[0] != rowFormatBinary {
-		return nil, fmt.Errorf("persist: row format %d", raw[0])
+		return nil, fmt.Errorf("hardhatdb: row format %d", raw[0])
 	}
 	n := len(schema)
 	bitmapLen := (n + 7) / 8
 	if len(raw) < 1+bitmapLen {
-		return nil, fmt.Errorf("persist: row is shorter than its null bitmap")
+		return nil, fmt.Errorf("hardhatdb: row is shorter than its null bitmap")
 	}
 	bitmap := raw[1 : 1+bitmapLen]
 	rest := raw[1+bitmapLen:]
@@ -350,13 +350,13 @@ func DecodeRow(ctx context.Context, schema sql.Schema, raw []byte) (sql.Row, err
 		}
 		value, read, err := DecodePayload(ctx, schema[i].Type, rest)
 		if err != nil {
-			return nil, fmt.Errorf("persist: column %s: %w", schema[i].Name, err)
+			return nil, fmt.Errorf("hardhatdb: column %s: %w", schema[i].Name, err)
 		}
 		row[i] = value
 		rest = rest[read:]
 	}
 	if len(rest) != 0 {
-		return nil, fmt.Errorf("persist: row has %d trailing bytes", len(rest))
+		return nil, fmt.Errorf("hardhatdb: row has %d trailing bytes", len(rest))
 	}
 	return row, nil
 }
@@ -364,16 +364,16 @@ func DecodeRow(ctx context.Context, schema sql.Schema, raw []byte) (sql.Row, err
 func DecodeRowJSON(ctx context.Context, schema sql.Schema, raw []byte) (sql.Row, error) {
 	var cells []cell
 	if err := json.Unmarshal(raw, &cells); err != nil {
-		return nil, fmt.Errorf("persist: row: %w", err)
+		return nil, fmt.Errorf("hardhatdb: row: %w", err)
 	}
 	if len(cells) != len(schema) {
-		return nil, fmt.Errorf("persist: row has %d values for %d columns", len(cells), len(schema))
+		return nil, fmt.Errorf("hardhatdb: row has %d values for %d columns", len(cells), len(schema))
 	}
 	row := make(sql.Row, len(cells))
 	for i, encoded := range cells {
 		value, err := DecodeValue(ctx, schema[i].Type, encoded)
 		if err != nil {
-			return nil, fmt.Errorf("persist: column %s: %w", schema[i].Name, err)
+			return nil, fmt.Errorf("hardhatdb: column %s: %w", schema[i].Name, err)
 		}
 		row[i] = value
 	}
@@ -386,7 +386,7 @@ func EncodePayload(ctx context.Context, value interface{}) ([]byte, error) {
 		return nil, err
 	}
 	if encoded.Null {
-		return nil, fmt.Errorf("persist: null payload")
+		return nil, fmt.Errorf("hardhatdb: null payload")
 	}
 	body, err := PayloadBody(encoded)
 	if err != nil {
@@ -439,7 +439,7 @@ func PayloadBody(encoded cell) ([]byte, error) {
 		}
 		return LenPrefixed(raw), nil
 	default:
-		return nil, fmt.Errorf("persist: cannot encode kind %q", encoded.Kind)
+		return nil, fmt.Errorf("hardhatdb: cannot encode kind %q", encoded.Kind)
 	}
 }
 
@@ -592,7 +592,7 @@ func EncodeValue(ctx context.Context, value interface{}) (cell, error) {
 	default:
 		raw, err := json.Marshal(v)
 		if err != nil {
-			return cell{}, fmt.Errorf("persist: cannot encode %T", value)
+			return cell{}, fmt.Errorf("hardhatdb: cannot encode %T", value)
 		}
 		return cell{Kind: "j", Str: string(raw)}, nil
 	}

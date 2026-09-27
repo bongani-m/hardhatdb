@@ -1,0 +1,38 @@
+---
+title: Architecture
+---
+
+# Architecture
+
+HardhatDB is a MySQL server with a Badger store underneath. SQL is executed by go-mysql-server. Cluster mode adds a HashiCorp Raft group in front of that store.
+
+**A standalone process:**
+
+- Listens for MySQL on `HARDHATDB_MYSQL_HOST` and `HARDHATDB_MYSQL_PORT` (default `localhost:3306`)
+- Stores tables in one Badger directory (`HARDHATDB_DATA`, default `data/hardhatdb`)
+- Creates the first account on first boot, then reads that account from the data directory
+- Reports `standalone` from `SHOW RAFT STATUS`
+
+**A Raft group:**
+
+- `HARDHATDB_RAFT_ADDR` turns cluster mode on
+- One node bootstraps with `HARDHATDB_RAFT_BOOTSTRAP=1` the first time the Raft directory is empty
+- The other nodes join with `HARDHATDB_RAFT_PEERS`
+- Writes succeed on the leader
+- A follower forwards a write, or a whole explicit transaction, to the current leader, then waits until that commit is applied locally before the next read on the same connection
+- Other connections can still see an older copy
+- Raft and the write-forward port stay on the private network and require mutual TLS when the address is not loopback
+
+```
+        mysql client
+       /      |      \
+   :3306    :3307    :3308
+     n1       n2       n3
+      \       |       /
+       Raft on :7001
+       forward on :7002
+```
+
+Each node keeps its own Badger directory and its own Raft log. `FLUSH BINARY LOGS` on the leader rolls every node's binlog together. The GTID stream is the same after a promotion, so any node can stream it.
+
+A ranged deployment adds a meta group. The meta group stores the catalog and the key ranges. Each data group stores the rows for the ranges it owns. See [Sharding](/sharding).

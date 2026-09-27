@@ -6,11 +6,9 @@ import (
 )
 
 func init() {
-	// Raft logs and forward messages written before the package split use the
-	// original type names.
-	gob.RegisterName("github.com/bongani-m/persist.kvOp", KVOp{})
-	gob.RegisterName("github.com/bongani-m/persist.rowChange", RowChange{})
-	gob.RegisterName("github.com/bongani-m/persist.replBatch", ReplBatch{})
+	gob.RegisterName("github.com/bongani-m/hardhatdb.kvOp", KVOp{})
+	gob.RegisterName("github.com/bongani-m/hardhatdb.rowChange", RowChange{})
+	gob.RegisterName("github.com/bongani-m/hardhatdb.replBatch", ReplBatch{})
 }
 
 // Peer is one voter in a Raft group.

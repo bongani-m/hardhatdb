@@ -4,7 +4,7 @@ Generated 2026-09-25T20:13:37-05:00.
 
 Each target loaded 5000 accounts and 10000 notes, then ran 8 clients for 20s with 80% reads. Cluster writes go to the leader and reads go to the followers. MySQL flushes the redo log and the binlog on commit. The single node fsyncs each commit. The cluster also waits for a Raft quorum. TiDB reads and writes go through one SQL server to a three-node TiKV group. A commit waits for two Raft quorums.
 
-CPU and memory are sampled about once a second while the client runs, including seed and warmup. 100% CPU is one core. A cluster figure is the sum of its nodes. Disk is the data directory after the run: `/data` on a persist node (Badger plus the Raft log) and `/var/lib/mysql` on MySQL. TiDB disk is the sum of the TiKV data directories.
+CPU and memory are sampled about once a second while the client runs, including seed and warmup. 100% CPU is one core. A cluster figure is the sum of its nodes. Disk is the data directory after the run: `/data` on a HardhatDB node (Badger plus the Raft log) and `/var/lib/mysql` on MySQL. TiDB disk is the sum of the TiKV data directories.
 
 | Target | ops/s | errors | p50 | p95 | p99 | seed |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: |

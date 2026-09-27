@@ -1,11 +1,11 @@
 // Stress-tests a MySQL-protocol server with one small-site workload.
 //
-// The same binary talks to a single persist node, a Raft cluster, or MySQL.
+// The same binary talks to a single HardhatDB node, a Raft cluster, or MySQL.
 // Writes go to -write. Reads go to -read (comma-separated). On a cluster,
 // point -write at the leader and -read at the followers.
 //
-//	go run ./performance/stress -label gms-single -write 127.0.0.1:3316
-//	go run ./performance/stress -label gms-cluster \
+//	go run ./performance/stress -label hardhatdb-single -write 127.0.0.1:3316
+//	go run ./performance/stress -label hardhatdb-cluster \
 //	  -write 127.0.0.1:3326 -read 127.0.0.1:3327,127.0.0.1:3328
 //	go run ./performance/stress -label mysql -write 127.0.0.1:3336
 //
@@ -584,7 +584,7 @@ func runSharded(ctx context.Context, r shardedRun) {
 }
 
 // The ranged stress cluster is two Raft groups on 10.119.0.0/24. Group ids
-// are the servers' GMS_SERVER_UUID values. ids below split stay on the first
+// are the servers' HARDHATDB_SERVER_UUID values. ids below split stay on the first
 // group; split itself is the first id of the second group.
 const (
 	rangeLeftGroup  = "33333333-3333-3333-3333-333333333331"

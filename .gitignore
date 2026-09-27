@@ -1,7 +1,7 @@
 # Compiled binaries
-/persist
+/hardhatdb
 /server
-/go/persist
+/go/hardhatdb
 /go/performance/stress/stress
 
 # Local data and generated stress output

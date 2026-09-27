@@ -10,13 +10,12 @@ import (
 )
 
 func init() {
-	// Forward messages written before the package split use the original names.
-	gob.RegisterName("github.com/bongani-m/persist.ForwardVar", ForwardVar{})
-	gob.RegisterName("github.com/bongani-m/persist.ForwardBind", ForwardBind{})
-	gob.RegisterName("github.com/bongani-m/persist.ForwardField", ForwardField{})
-	gob.RegisterName("github.com/bongani-m/persist.ForwardCell", ForwardCell{})
-	gob.RegisterName("github.com/bongani-m/persist.ForwardRequest", ForwardRequest{})
-	gob.RegisterName("github.com/bongani-m/persist.ForwardReply", ForwardReply{})
+	gob.RegisterName("github.com/bongani-m/hardhatdb.ForwardVar", ForwardVar{})
+	gob.RegisterName("github.com/bongani-m/hardhatdb.ForwardBind", ForwardBind{})
+	gob.RegisterName("github.com/bongani-m/hardhatdb.ForwardField", ForwardField{})
+	gob.RegisterName("github.com/bongani-m/hardhatdb.ForwardCell", ForwardCell{})
+	gob.RegisterName("github.com/bongani-m/hardhatdb.ForwardRequest", ForwardRequest{})
+	gob.RegisterName("github.com/bongani-m/hardhatdb.ForwardReply", ForwardReply{})
 }
 
 // ForwardVar is one user variable sent with a forwarded statement.
@@ -130,7 +129,7 @@ func (f *ForwardClient) Exec(req ForwardRequest, timeout time.Duration) (Forward
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if f.closed {
-		return ForwardReply{}, fmt.Errorf("persist: forward connection is closed")
+		return ForwardReply{}, fmt.Errorf("hardhatdb: forward connection is closed")
 	}
 	if err := f.conn.SetDeadline(time.Now().Add(timeout)); err != nil {
 		return ForwardReply{}, err
