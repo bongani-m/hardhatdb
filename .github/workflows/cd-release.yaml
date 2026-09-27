@@ -41,6 +41,8 @@ jobs:
         uses: actions/checkout@v4
         with:
           repository: bongani-m/go-mysql-server
+          ref: ft/hooks
+          ssh-key: ${{ secrets.GMS_DEPLOY_KEY }}
           path: go-mysql-server
 
       - name: Set up Go
@@ -107,6 +109,9 @@ jobs:
   image:
     name: Docker image
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
     steps:
       - name: Check out HardhatDB
         uses: actions/checkout@v4
@@ -117,6 +122,8 @@ jobs:
         uses: actions/checkout@v4
         with:
           repository: bongani-m/go-mysql-server
+          ref: ft/hooks
+          ssh-key: ${{ secrets.GMS_DEPLOY_KEY }}
           path: go-mysql-server
 
       - name: Build image
@@ -128,14 +135,9 @@ jobs:
 
       - name: Push image
         env:
-          REGISTRY: ${{ secrets.REGISTRY }}
-          REGISTRY_USERNAME: ${{ secrets.REGISTRY_USERNAME }}
-          REGISTRY_TOKEN: ${{ secrets.REGISTRY_TOKEN }}
+          GHCR_IMAGE: ghcr.io/${{ github.repository }}
         run: |
-          if [ -z "$REGISTRY_TOKEN" ]; then
-            echo "REGISTRY_TOKEN is unset; the image was built and not pushed"
-            exit 0
-          fi
-          echo "$REGISTRY_TOKEN" | docker login "$REGISTRY" -u "$REGISTRY_USERNAME" --password-stdin
-          docker tag "hardhatdb:${{ inputs.version }}" "$REGISTRY/hardhatdb:${{ inputs.version }}"
-          docker push "$REGISTRY/hardhatdb:${{ inputs.version }}"
+          image="$(printf '%s' "$GHCR_IMAGE" | tr '[:upper:]' '[:lower:]'):${{ inputs.version }}"
+          echo "${{ github.token }}" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
+          docker tag "hardhatdb:${{ inputs.version }}" "$image"
+          docker push "$image"

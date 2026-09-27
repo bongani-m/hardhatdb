@@ -16,10 +16,17 @@ jobs:
         with:
           path: hardhatdb
 
+      # Private repo: GITHUB_TOKEN is scoped to hardhatdb and the API
+      # returns 404. GMS_DEPLOY_KEY is a read-only deploy key.
+      # Pin ft/hooks so CI matches the local engine checkout. The
+      # default branch is ft/persist, which still compiles but is an
+      # older tree with the persist module still in this repo.
       - name: Check out go-mysql-server
         uses: actions/checkout@v4
         with:
           repository: bongani-m/go-mysql-server
+          ref: ft/hooks
+          ssh-key: ${{ secrets.GMS_DEPLOY_KEY }}
           path: go-mysql-server
 
       - name: Set up Go
