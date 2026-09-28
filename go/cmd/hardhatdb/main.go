@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 
+	"github.com/bongani-m/hardhatdb/go/cmd/hardhatdb/commands/restore"
 	"github.com/bongani-m/hardhatdb/go/cmd/hardhatdb/commands/sqlserver"
 	"github.com/bongani-m/hardhatdb/go/cmd/hardhatdb/version"
 )
@@ -21,6 +22,7 @@ func main() {
 func run(args []string) int {
 	commands := []command{
 		{Name: "sql-server", Desc: "start the MySQL server", Exec: sqlserver.Exec},
+		{Name: "restore", Desc: "load a backup into an empty data directory", Exec: restore.Exec},
 		{Name: "version", Desc: "print the HardhatDB version", Exec: execVersion},
 	}
 	if len(args) == 0 {

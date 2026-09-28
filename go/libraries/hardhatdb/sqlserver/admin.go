@@ -20,17 +20,21 @@ const (
 	adminAdd         = "add"
 	adminAddNonvoter = "add-nonvoter"
 	adminRemove      = "remove"
+	adminBackup      = "backup"
+	adminRestore     = "restore-binlog"
 )
 
 type adminCmd struct {
-	kind string
-	id   string
-	addr string
+	kind  string
+	id    string
+	addr  string
+	path  string
+	after uint64
 }
 
 // parseAdmin recognizes SHOW RAFT STATUS, RAFT ADD VOTER, RAFT ADD NONVOTER,
-// and RAFT REMOVE SERVER. The SQL parser does not know these statements.
-// Other statements return before the tokenizer runs.
+// RAFT REMOVE SERVER, BACKUP TO, and RESTORE BINLOG FROM. The SQL parser does
+// not know these statements. Other statements return before the tokenizer runs.
 func parseAdmin(query string) (adminCmd, bool) {
 	q := strings.TrimSpace(query)
 	if strings.HasSuffix(q, ";") {
@@ -64,12 +68,22 @@ func parseAdmin(query string) (adminCmd, bool) {
 		}
 		return adminCmd{kind: adminRemove, id: fields[3]}, true
 	}
+	if len(fields) == 3 && strings.EqualFold(fields[0], "BACKUP") && strings.EqualFold(fields[1], "TO") && fields[2] != "" {
+		return adminCmd{kind: adminBackup, path: fields[2]}, true
+	}
+	if len(fields) == 6 && strings.EqualFold(fields[0], "RESTORE") && strings.EqualFold(fields[1], "BINLOG") && strings.EqualFold(fields[2], "FROM") && strings.EqualFold(fields[4], "AFTER") && fields[3] != "" {
+		after, err := strconv.ParseUint(fields[5], 10, 64)
+		if err != nil {
+			return adminCmd{}, false
+		}
+		return adminCmd{kind: adminRestore, path: fields[3], after: after}, true
+	}
 	return adminCmd{}, false
 }
 
 // adminPrefix reports whether q can be a Raft admin statement.
 func adminPrefix(q string) bool {
-	if hasWordPrefix(q, "RAFT") {
+	if hasWordPrefix(q, "RAFT") || hasWordPrefix(q, "BACKUP") || hasWordPrefix(q, "RESTORE") {
 		return true
 	}
 	return hasWordPrefix(q, "SHOW RAFT")
@@ -172,7 +186,7 @@ func (h *adminHandler) ComStmtExecute(ctx context.Context, c *mysql.Conn, prepar
 
 // runAdminLocal runs a Raft admin statement on this process.
 func runAdminLocal(store *hardhatdb.Store, cmd adminCmd, callback mysql.ResultSpoolFn) error {
-	if cmd.kind != adminStatus && !store.Replicating() {
+	if cmd.kind != adminStatus && cmd.kind != adminBackup && !store.Replicating() {
 		return mysql.NewSQLError(mysql.ERUnknownError, "HY000", "hardhatdb: store is not replicating")
 	}
 	reply, err := runAdmin(store, cmd)
@@ -201,9 +215,37 @@ func runAdmin(store *hardhatdb.Store, cmd adminCmd) (cluster.ForwardReply, error
 			return cluster.ForwardReply{}, err
 		}
 		return cluster.ForwardReply{Info: "server removed"}, nil
+	case adminBackup:
+		index, err := store.BackupTo(cmd.path)
+		if err != nil {
+			return cluster.ForwardReply{}, err
+		}
+		return indexReply(index), nil
+	case adminRestore:
+		if !store.IsLeader() {
+			return cluster.ForwardReply{}, fmt.Errorf("hardhatdb: not the leader")
+		}
+		if err := store.ReplayBinlogAfter(cmd.path, cmd.after); err != nil {
+			return cluster.ForwardReply{}, err
+		}
+		return cluster.ForwardReply{Info: "binlog restored"}, nil
 	default:
 		return cluster.ForwardReply{}, fmt.Errorf("hardhatdb: unknown statement")
 	}
+}
+
+func indexReply(index uint64) cluster.ForwardReply {
+	fields := []cluster.ForwardField{{
+		Name:         "index",
+		Type:         int32(querypb.Type_VARCHAR),
+		Charset:      45,
+		ColumnLength: 32,
+	}}
+	cells := []cluster.ForwardCell{{
+		Type: int32(querypb.Type_VARCHAR),
+		Raw:  []byte(strconv.FormatUint(index, 10)),
+	}}
+	return cluster.ForwardReply{Fields: fields, Rows: [][]cluster.ForwardCell{cells}}
 }
 
 func statusReply(store *hardhatdb.Store) cluster.ForwardReply {

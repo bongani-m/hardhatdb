@@ -165,6 +165,7 @@ type Group struct {
 	raft      *raft.Raft
 	wal       *raftWAL
 	bolt      *raftboltdb.BoltStore
+	snaps     *raft.FileSnapshotStore
 	transport raft.Transport
 	timeout   time.Duration
 	tls       *tls.Config
@@ -261,7 +262,17 @@ func startCluster(store Engine, opts ClusterOptions) (*Group, error) {
 			closeTransport(transport)
 			return nil, err
 		}
-		if has {
+		applied := store.ReadRaftApplied()
+		if !has && applied > 0 {
+			if err := seedRestoredSnapshot(snaps, store, opts, transport, applied); err != nil {
+				wal.Close()
+				bolt.Close()
+				closeTransport(transport)
+				return nil, err
+			}
+			log.Printf("hardhatdb: restored data is at raft index %d; starting the group from that snapshot", applied)
+			bootstrapped = true
+		} else if has {
 			log.Printf("hardhatdb: HARDHATDB_RAFT_BOOTSTRAP is set and this node already has Raft state; ignoring bootstrap")
 		} else {
 			err = raft.BootstrapCluster(cfg, wal, bolt, snaps, transport, raft.Configuration{
@@ -291,6 +302,7 @@ func startCluster(store Engine, opts ClusterOptions) (*Group, error) {
 		raft:         r,
 		wal:          wal,
 		bolt:         bolt,
+		snaps:        snaps,
 		transport:    transport,
 		timeout:      opts.ApplyTimeout,
 		tls:          opts.TLS,
@@ -889,7 +901,10 @@ func (c *Group) fsmTarget(index uint64) uint64 {
 	for idx := index; idx > 0; idx-- {
 		var lg raft.Log
 		if err := c.wal.GetLog(idx, &lg); err != nil {
-			return index
+			// A missing entry behind a noop is the snapshot the FSM already
+			// applied. Returning the commit index would wait for a noop the
+			// FSM never sees.
+			return idx
 		}
 		if lg.Type != raft.LogNoop {
 			return idx
@@ -1002,6 +1017,52 @@ func (c *Group) Snapshot() error {
 		return fmt.Errorf("hardhatdb: store is not replicating")
 	}
 	return c.raft.Snapshot().Error()
+}
+
+// LatestSnapshot opens the newest snapshot. The reader is the Badger backup
+// stream, and the index is the last Raft entry included in it.
+func (c *Group) LatestSnapshot() (uint64, io.ReadCloser, error) {
+	if c == nil || c.snaps == nil {
+		return 0, nil, fmt.Errorf("hardhatdb: store is not replicating")
+	}
+	metas, err := c.snaps.List()
+	if err != nil {
+		return 0, nil, err
+	}
+	if len(metas) == 0 {
+		return 0, nil, fmt.Errorf("hardhatdb: no snapshot")
+	}
+	meta, rc, err := c.snaps.Open(metas[0].ID)
+	if err != nil {
+		return 0, nil, err
+	}
+	return meta.Index, rc, nil
+}
+
+// seedRestoredSnapshot records a snapshot at index so a new group starts
+// there. The Badger directory already holds that state, and startup does not
+// load the snapshot a second time.
+func seedRestoredSnapshot(snaps *raft.FileSnapshotStore, eng Engine, opts ClusterOptions, trans raft.Transport, index uint64) error {
+	conf := raft.Configuration{
+		Servers: []raft.Server{{
+			ID:       raft.ServerID(opts.ID),
+			Address:  raft.ServerAddress(opts.Advertise),
+			Suffrage: raft.Voter,
+		}},
+	}
+	sink, err := snaps.Create(raft.SnapshotVersionMax, index, 1, conf, index, trans)
+	if err != nil {
+		return err
+	}
+	if err := eng.SyncData(); err != nil {
+		_ = sink.Cancel()
+		return err
+	}
+	if err := eng.WriteBackup(sink); err != nil {
+		_ = sink.Cancel()
+		return err
+	}
+	return sink.Close()
 }
 
 // TransferLeadership moves the primary to another voter.

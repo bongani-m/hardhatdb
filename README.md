@@ -191,7 +191,9 @@ RAFT REMOVE SERVER 'n4';
 
 A nonvoter copies the log and serves reads. It does not vote, so quorum stays the voters. A write sent to it is forwarded to the leader. `RAFT REMOVE SERVER` drops a voter or a nonvoter. More write throughput comes from a faster machine for the voters. A table whose writes do not fit that leader is placed with `SHARD TABLE` on a second set of peers. A size-based split stays on the current hosts and does not add a machine.
 
-`HARDHATDB_RAFT_BOOTSTRAP=1` bootstraps only when the Raft directory has no state. A later start with the flag still set logs that bootstrap is ignored, then catches up as a follower instead of waiting to become leader. A wiped volume with the flag left on still creates a second group.
+`HARDHATDB_RAFT_BOOTSTRAP=1` bootstraps only when the Raft directory has no state. A later start with the flag still set logs that bootstrap is ignored, then catches up as a follower instead of waiting to become leader. A wiped volume with the flag left on still creates a second group. Restored data is the exception: an empty Raft directory and a data directory that already has a Raft index start the group from that index.
+
+`BACKUP TO '/var/backups/1'` writes that directory on the leader, or on a standalone process. It holds `state.bin`, `meta`, and, in a cluster, `binlog/`. The directory is refused when it already holds files. With the server stopped, `hardhatdb restore --from /var/backups/1 --data /data/hardhatdb` loads `state.bin` into an empty data directory and refuses one that already exists. Start that process with a fresh Raft directory. On the new leader, `RESTORE BINLOG FROM '/var/backups/1/binlog' AFTER n` applies binlog events whose sequence is above the index in `meta`. Each process backs up the directory it stores.
 
 `SET GLOBAL max_connections` does not resize the listener. The cap is `HARDHATDB_MAX_CONNECTIONS`, read at start. The same is true of the net timeouts.
 

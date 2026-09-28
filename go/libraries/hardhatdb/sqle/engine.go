@@ -25,6 +25,7 @@ type raftNode interface {
 	Ready() bool
 	Bootstrapped() bool
 	Snapshot() error
+	LatestSnapshot() (uint64, io.ReadCloser, error)
 	TransferLeadership() error
 	LastIndex() (uint64, error)
 	AppliedIndex() uint64
@@ -57,6 +58,13 @@ func (s *Store) Badger() *badger.DB { return s.badgerDB() }
 
 func (s *Store) SyncData() error { return s.syncData() }
 
+func (s *Store) WriteBackup(w io.Writer) error {
+	if s.data == nil {
+		return fmt.Errorf("hardhatdb: database is closed")
+	}
+	return s.data.WriteBackup(w)
+}
+
 func (s *Store) InstallBackup(r io.Reader) error {
 	return s.data.InstallBackup(r)
 }
@@ -76,6 +84,7 @@ func (s *Store) PrepareCluster(raftDir, groupID, serverUUID string, binlogMax ui
 	}
 	s.bin = bin
 	s.raftDir = raftDir
+	s.serverUUID = serverUUID
 	s.groupID = groupID
 	if s.groupID == "" {
 		s.groupID = serverUUID
@@ -172,6 +181,13 @@ func (s *Store) Snapshot() error {
 		return nil
 	}
 	return s.group.Snapshot()
+}
+
+func (s *Store) LatestSnapshot() (uint64, io.ReadCloser, error) {
+	if s.group == nil {
+		return 0, nil, fmt.Errorf("hardhatdb: store is not replicating")
+	}
+	return s.group.LatestSnapshot()
 }
 
 func (s *Store) TransferLeadership() error { return s.group.TransferLeadership() }

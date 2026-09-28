@@ -47,6 +47,38 @@ FLUSH BINARY LOGS;
 
 On the leader, this rolls every node's binlog together.
 
+## Backup
+
+```sql
+BACKUP TO '/var/backups/1';
+```
+
+Writes one directory on the server that runs the statement. A follower forwards it, so that server is the leader. A standalone process writes it locally. The directory is created when it is missing and refused when it already holds files.
+
+| File | Contents |
+|------|----------|
+| `state.bin` | Full data directory at one Raft index |
+| `meta` | That index and the server UUID |
+| `binlog/` | Binlog files copied after the snapshot. Absent on a standalone process |
+
+The index in `meta` is 0 when the process is standalone. Events appended after the copy are not in this backup.
+
+Load the directory into an empty data directory while that server is stopped:
+
+```bash
+hardhatdb restore --from /var/backups/1 --data /data/hardhatdb
+```
+
+The command refuses a data directory that already exists. Point the new process at a fresh Raft directory. `HARDHATDB_RAFT_BOOTSTRAP=1` on restored data that already has a Raft index starts the group from that index instead of index 1. A standalone restore starts `sql-server` on the restored directory.
+
+Replay the binlog tail on the leader of that new group. `path` is the backup's `binlog/` directory, and `n` is the index in `meta`. Events at or below `n` are skipped.
+
+```sql
+RESTORE BINLOG FROM '/var/backups/1/binlog' AFTER 12;
+```
+
+The new group's own binlog records the replayed tail under new indexes. An external replica of the old GTID stream does not resume from this group. Run the statement on the restored group, not on the cluster the backup was taken from.
+
 ## Upstream replica
 
 ```sql

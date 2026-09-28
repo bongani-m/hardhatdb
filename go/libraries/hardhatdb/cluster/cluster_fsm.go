@@ -1,7 +1,6 @@
 package cluster
 
 import (
-	"encoding/binary"
 	"io"
 	"os"
 
@@ -129,18 +128,7 @@ func (f *storeFSM) Snapshot() (raft.FSMSnapshot, error) {
 		_ = os.Remove(path)
 		return nil, err
 	}
-	// Leave room for the version prefix, then write it once Backup returns it.
-	if _, err := file.Seek(8, io.SeekStart); err != nil {
-		return fail(err)
-	}
-	version, err := f.store.Badger().Backup(file, 0)
-	if err != nil {
-		return fail(err)
-	}
-	if _, err := file.Seek(0, io.SeekStart); err != nil {
-		return fail(err)
-	}
-	if err := binary.Write(file, binary.LittleEndian, version); err != nil {
+	if err := f.store.WriteBackup(file); err != nil {
 		return fail(err)
 	}
 	if err := file.Sync(); err != nil {

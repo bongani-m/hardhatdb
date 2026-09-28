@@ -969,10 +969,48 @@ func (s *Store) ReplayBinlog(path string) error {
 	return nil
 }
 
+// ReplayBinlogAfter applies binlog files in dir, skipping GTID events whose
+// sequence is at or below after. Sequence numbers are Raft indexes. The caller
+// is the leader of a group restored from the backup that produced dir.
+func (s *Store) ReplayBinlogAfter(dir string, after uint64) error {
+	names, err := binlogNames(dir)
+	if err != nil {
+		return err
+	}
+	if len(names) == 0 {
+		return fmt.Errorf("hardhatdb: no binlog files in %s", dir)
+	}
+	applier := &binlogApply{
+		tables:   map[uint64]*mysql.TableMap{},
+		after:    after,
+		useAfter: true,
+	}
+	for _, name := range names {
+		events, format, err := readBinlogFile(filepath.Join(dir, name))
+		if err != nil {
+			return err
+		}
+		if format.FormatVersion != 0 {
+			applier.format = format
+		}
+		for _, ev := range events {
+			if err := applier.event(s, ev); err != nil {
+				return err
+			}
+		}
+	}
+	if applier.txn != nil {
+		return applier.txn.finish(s)
+	}
+	return nil
+}
+
 type binlogApply struct {
-	format mysql.BinlogFormat
-	tables map[uint64]*mysql.TableMap
-	txn    *replicaTxn
+	format   mysql.BinlogFormat
+	tables   map[uint64]*mysql.TableMap
+	txn      *replicaTxn
+	after    uint64
+	useAfter bool
 }
 
 func (s *Store) consumeUpstream(ctx context.Context, stream binlogStream) error {
@@ -1028,6 +1066,12 @@ func (a *binlogApply) event(s *Store, ev mysql.BinlogEvent) error {
 		gtid, _, err := ev.GTID(a.format)
 		if err != nil {
 			return err
+		}
+		if a.useAfter {
+			if mg, ok := gtid.(mysql.Mysql56GTID); ok && mg.Sequence >= 0 && uint64(mg.Sequence) <= a.after {
+				a.txn = &replicaTxn{skip: true}
+				return nil
+			}
 		}
 		if err := s.noteRetrievedGTID(gtid); err != nil {
 			return err

@@ -17,6 +17,7 @@ type Engine interface {
 	Path() string
 	RaftDir() string
 	SyncData() error
+	WriteBackup(w io.Writer) error
 	InstallBackup(r io.Reader) error
 	NoteFSMApplied(index uint64)
 	ReadRaftApplied() uint64

@@ -98,6 +98,43 @@ func (d *DB) Close() error {
 	return err
 }
 
+// WriteBackup writes the stream InstallBackup reads: an 8-byte little-endian
+// Badger version, then a full backup. w does not need to be seekable.
+func (d *DB) WriteBackup(w io.Writer) error {
+	db := d.Badger()
+	if db == nil {
+		return fmt.Errorf("hardhatdb: database is closed")
+	}
+	tmp, err := os.CreateTemp("", "hardhatdb-backup-*")
+	if err != nil {
+		return err
+	}
+	name := tmp.Name()
+	defer os.Remove(name)
+	defer tmp.Close()
+	if _, err := tmp.Seek(8, io.SeekStart); err != nil {
+		return err
+	}
+	version, err := db.Backup(tmp, 0)
+	if err != nil {
+		return err
+	}
+	if _, err := tmp.Seek(0, io.SeekStart); err != nil {
+		return err
+	}
+	if err := binary.Write(tmp, binary.LittleEndian, version); err != nil {
+		return err
+	}
+	if err := tmp.Sync(); err != nil {
+		return err
+	}
+	if _, err := tmp.Seek(0, io.SeekStart); err != nil {
+		return err
+	}
+	_, err = io.Copy(w, tmp)
+	return err
+}
+
 // Sync fsyncs Badger when commits themselves do not.
 func (d *DB) Sync() error {
 	if d == nil || d.syncWrites {

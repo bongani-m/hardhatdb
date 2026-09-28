@@ -57,9 +57,11 @@ type Store struct {
 	raftDir string
 	// groupID is the range group this directory belongs to. The primary
 	// group uses the shared server UUID. A split group sets its own.
-	groupID  string
-	repl     *replicaState
-	replOnce sync.Once
+	groupID string
+	// serverUUID is the GTID server id shared by the Raft group.
+	serverUUID string
+	repl       *replicaState
+	replOnce   sync.Once
 	// privMu guards privDB and privSkip. Persist sets privSkip before it waits
 	// for Raft, so the apply path can see that this process already updated
 	// the in-memory accounts and must not take the MySQLDb editor lock.

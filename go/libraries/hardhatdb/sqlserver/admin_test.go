@@ -32,6 +32,19 @@ func TestParseAdmin(t *testing.T) {
 	require.False(t, ok)
 	_, ok = parseAdmin("RAFT ADD NONVOTER 'only-one'")
 	require.False(t, ok)
+
+	backup, ok := parseAdmin(`BACKUP TO '/var/backups/1'`)
+	require.True(t, ok)
+	require.Equal(t, adminCmd{kind: adminBackup, path: "/var/backups/1"}, backup)
+
+	replay, ok := parseAdmin(`RESTORE BINLOG FROM '/var/backups/1/binlog' AFTER 12`)
+	require.True(t, ok)
+	require.Equal(t, adminCmd{kind: adminRestore, path: "/var/backups/1/binlog", after: 12}, replay)
+
+	_, ok = parseAdmin("BACKUP TO")
+	require.False(t, ok)
+	_, ok = parseAdmin("RESTORE BINLOG FROM '/tmp/binlog' AFTER nope")
+	require.False(t, ok)
 }
 
 func TestLoadLimitsDefaults(t *testing.T) {
