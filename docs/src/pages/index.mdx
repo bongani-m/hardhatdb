@@ -8,7 +8,7 @@ import { Hero } from "../components/Hero.tsx";
 
 ## What & Why?
 
-HardhatDB is a MySQL server backed by one Badger directory. Rows are still there after the process exits. A single process stores data locally. Set `HARDHATDB_RAFT_ADDR` and the same server joins a Raft group: writes go to the leader, followers forward them, and any node can stream the binlog.
+HardhatDB is a MySQL server backed by one Badger directory. Rows are still there after the process exits. SQL runs in [go-mysql-server](https://github.com/dolthub/go-mysql-server) (Dolthub, Apache-2.0), which uses Vitess from Dolthub. Rows are stored in [Badger](https://github.com/dgraph-io/badger) (Dgraph, Apache-2.0). Cluster mode uses [HashiCorp Raft](https://github.com/hashicorp/raft) (MPL-2.0, Copyright IBM Corp.). A single process stores data locally. Set `HARDHATDB_RAFT_ADDR` and the same server joins a Raft group: writes go to the leader, followers forward them, and any node can stream the binlog.
 
 **Key features:**
 
@@ -27,4 +27,5 @@ HardhatDB is a MySQL server backed by one Badger directory. Rows are still there
 | **A small Raft group** | Three nodes, writes on the leader, reads on any node |
 | **App failover** | Clients take every MySQL address and try the next one when a connection breaks |
 | **A replica of upstream MySQL** | `CHANGE REPLICATION SOURCE TO` on the group, GTID auto-position |
+| **A move from MySQL** | Dump and load, or replicate while the source binlog still has every GTID. See [Migration](/migration) |
 | **Range-partitioned data** | `SHARD TABLE` places each key range on its own Raft group |

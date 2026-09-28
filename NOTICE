@@ -1,0 +1,28 @@
+HardhatDB
+Licensed under the Apache License, Version 2.0. See LICENSE.
+
+This program is built with the following works:
+
+SQL
+  go-mysql-server
+  Copyright Dolthub, Inc.
+  https://github.com/dolthub/go-mysql-server
+  Apache License, Version 2.0
+
+  Vitess (Dolthub fork, used by go-mysql-server)
+  https://github.com/dolthub/vitess
+  Apache License, Version 2.0
+
+Storage
+  Badger
+  Copyright © 2017-2025 Istari Digital, Inc.
+  https://github.com/dgraph-io/badger
+  Apache License, Version 2.0
+
+Replication
+  HashiCorp Raft
+  Copyright IBM Corp. 2013, 2026
+  https://github.com/hashicorp/raft
+  Mozilla Public License, version 2.0
+  The license text is in licenses/MPL-2.0 and is copied into the
+  container image at /usr/share/doc/hardhatdb/MPL-2.0.

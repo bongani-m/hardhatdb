@@ -2,6 +2,8 @@
 
 A MySQL server backed by one Badger directory. Rows are still there after the process exits.
 
+SQL runs in [go-mysql-server](https://github.com/dolthub/go-mysql-server) (Dolthub, Apache-2.0), which uses Vitess from Dolthub. Rows are stored in [Badger](https://github.com/dgraph-io/badger) (Dgraph, Apache-2.0). Cluster mode uses [HashiCorp Raft](https://github.com/hashicorp/raft) (MPL-2.0, Copyright IBM Corp.). See [NOTICE](NOTICE).
+
 The documentation site is in [`docs/`](docs/). Pushes to `main` publish it to GitHub Pages.
 
 Run the server from the `go` directory. The example clients take `MYSQL_ADDRS` and send reads and writes to any of those nodes.

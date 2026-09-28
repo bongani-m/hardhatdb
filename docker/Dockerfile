@@ -20,6 +20,9 @@ RUN apt-get update \
 	&& rm -rf /var/lib/apt/lists/*
 
 COPY --from=build /out/hardhatdb /usr/local/bin/hardhatdb
+COPY LICENSE /usr/share/doc/hardhatdb/LICENSE
+COPY NOTICE /usr/share/doc/hardhatdb/NOTICE
+COPY licenses/MPL-2.0 /usr/share/doc/hardhatdb/MPL-2.0
 
 WORKDIR /data
 ENV HARDHATDB_DATA=/data/hardhatdb

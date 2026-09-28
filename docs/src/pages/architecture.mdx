@@ -4,7 +4,7 @@ title: Architecture
 
 # Architecture
 
-HardhatDB is a MySQL server with a Badger store underneath. SQL is executed by go-mysql-server. Cluster mode adds a HashiCorp Raft group in front of that store.
+HardhatDB is a MySQL server with a Badger store underneath. SQL is executed by [go-mysql-server](https://github.com/dolthub/go-mysql-server) (Dolthub, Apache-2.0), which uses Vitess from Dolthub. Rows are stored in [Badger](https://github.com/dgraph-io/badger) (Dgraph, Apache-2.0). Cluster mode adds a [HashiCorp Raft](https://github.com/hashicorp/raft) group (MPL-2.0, Copyright IBM Corp.) in front of that store.
 
 **A standalone process:**
 
