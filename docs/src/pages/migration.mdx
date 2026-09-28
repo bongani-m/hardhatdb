@@ -1,0 +1,112 @@
+---
+title: Migration
+---
+
+# Migration
+
+HardhatDB speaks the MySQL wire protocol. Move a database by loading SQL into an empty server, then point clients at that server. InnoDB files stay on MySQL.
+
+`hardhatdb-cli` runs the same steps. `load` copies schema and rows. `replicate` follows the MySQL binlog. Use one of them. A load does not record the source GTID set, so `replicate` after `load` inserts the same rows again.
+
+SQL has to be the MySQL dialect accepted by go-mysql-server. See [Compatibility](/compatibility). The first boot creates one `mysql_native_password` account, so MySQL grants do not come across. Clients use that account.
+
+## Empty server
+
+Leave `HARDHATDB_SEED_EXAMPLE` unset. The first boot creates the account and an empty data directory.
+
+```bash
+HARDHATDB_BOOTSTRAP_PASSWORD=secret go run ./cmd/hardhatdb sql-server
+```
+
+`HARDHATDB_BOOTSTRAP_PASSWORD` is required on that first boot and is not saved for later boots. The default user is `root` and the default host is `%`.
+
+A published container needs `HARDHATDB_MYSQL_HOST=0.0.0.0`. See [Getting Started](/getting-started).
+
+## Dump and load
+
+`hardhatdb-cli load` reads tables from MySQL and writes them to HardhatDB. Views, triggers, routines, and events are skipped and named on stderr. The command compares row counts and exits non-zero when a count differs.
+
+```bash
+hardhatdb-cli load mysql://root:secret@127.0.0.1:3306 \
+  hardhatdb://root:secret@127.0.0.1:3307 appdb
+```
+
+Stop writes on MySQL before the copy when the cutover has to match the source exactly. A dump is the same copy for a large database. `--single-transaction` keeps an InnoDB dump consistent while the application is still writing. Writes that commit after the dump starts are absent from the file.
+
+```bash
+mysqldump --single-transaction --skip-triggers --no-tablespaces \
+  --set-gtid-purged=OFF --databases appdb > app.sql
+
+mysql --host=127.0.0.1 --port=3306 --user=root --password=secret < app.sql
+```
+
+`--set-gtid-purged=OFF` keeps `SET @@GLOBAL.GTID_PURGED` out of the file. HardhatDB has no executed GTID set to seed. Routines, events, triggers, and `DEFINER` clauses are the usual load failures. Remove them from the dump and recreate only the statements the application still runs.
+
+Compare row counts on both servers before changing the application.
+
+## Catch up from the MySQL binlog
+
+Use replication when MySQL still has every GTID and the HardhatDB data directory is empty. `hardhatdb-cli replicate` reads the host, port, user, and password from the source URL, then runs the statements below. It refuses a source URL that enables TLS, a destination that already has tables, and a destination that already has an executed GTID set. The replica connects with TLS disabled.
+
+```bash
+hardhatdb-cli replicate mysql://repl:secret@mysql.example:3306 \
+  hardhatdb://root:secret@127.0.0.1:3307 appdb
+```
+
+The current primary connects. A follower does not. Details are in [Replication](/replication).
+
+On MySQL:
+
+- `gtid_mode=ON` and `enforce_gtid_consistency=ON`
+- Row-based binary logging
+- A replication user that can read the binlog
+- `server_id` other than `2`. The replica dials with server id `2`
+- Plaintext. The replica connects with TLS disabled, so `require_secure_transport` on MySQL rejects it
+
+```sql
+CHANGE REPLICATION SOURCE TO
+  SOURCE_HOST = 'mysql.example',
+  SOURCE_PORT = 3306,
+  SOURCE_USER = 'repl',
+  SOURCE_PASSWORD = 'secret',
+  SOURCE_AUTO_POSITION = 1;
+
+START REPLICA;
+```
+
+`SOURCE_AUTO_POSITION` stays on. The same host, port, user, and password can be set before the first start with `HARDHATDB_SOURCE_HOST`, `HARDHATDB_SOURCE_PORT`, `HARDHATDB_SOURCE_USER`, and `HARDHATDB_SOURCE_PASSWORD`. On a cluster, set them on every node. The password is a local file beside the Raft directory, so a promoted node can dial only when it already has that file.
+
+An empty server requests every GTID. There is no `SET GTID_PURGED`. Loading a dump does not record the source GTID set, so `START REPLICA` after a load replays history and inserts the same rows again. When MySQL has already purged binlogs, load the dump and skip the replica.
+
+Row events apply to tables that already exist. Query events, including DDL, run as SQL. Limit row events to one database with a wildcard filter:
+
+```sql
+CHANGE REPLICATION FILTER REPLICATE_WILD_DO_TABLE = ('appdb.%');
+```
+
+`REPLICATE_DO_TABLE`, `REPLICATE_IGNORE_TABLE`, `REPLICATE_WILD_IGNORE_TABLE`, `REPLICATE_DO_DB`, and `REPLICATE_IGNORE_DB` are also accepted. `REPLICATE_DO_DB` and `REPLICATE_IGNORE_DB` values have to contain a `.`. `REPLICATE_REWRITE_DB` is rejected. Filters apply to row events. Query events still run.
+
+`SHOW REPLICA STATUS` reports `Replica_IO_Running`, `Replica_SQL_Running`, `Executed_Gtid_Set`, `Retrieved_Gtid_Set`, and `Seconds_Behind_Source`.
+
+## Cut over
+
+`hardhatdb-cli status` prints the replica fields. `hardhatdb-cli cutover` waits until `Retrieved_Gtid_Set` matches `Executed_Gtid_Set`, `Seconds_Behind_Source` is `0`, and both threads are running, then runs `STOP REPLICA`. The default wait is 5 minutes. Make MySQL read-only before that. The command does not change MySQL.
+
+```bash
+hardhatdb-cli status hardhatdb://root:secret@127.0.0.1:3307
+hardhatdb-cli cutover hardhatdb://root:secret@127.0.0.1:3307
+```
+
+With a replica, wait until `Retrieved_Gtid_Set` matches `Executed_Gtid_Set` and `Seconds_Behind_Source` is `0`, then stop the job:
+
+```sql
+STOP REPLICA;
+```
+
+Point the application at HardhatDB. The driver stays a MySQL driver. Change the host, port, user, and password. When `HARDHATDB_TLS_CERT` and `HARDHATDB_TLS_KEY` are set, clients use TLS.
+
+On a cluster, any node accepts a write and forwards it to the leader. A read on another connection can still see an older copy. Pass every address and try the next one when a connection breaks:
+
+```bash
+MYSQL_ADDRS=10.116.0.2:3306,10.116.0.3:3306,10.116.0.4:3306
+```
