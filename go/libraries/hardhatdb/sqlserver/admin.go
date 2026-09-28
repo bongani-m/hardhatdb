@@ -16,12 +16,17 @@ import (
 )
 
 const (
-	adminStatus      = "status"
-	adminAdd         = "add"
-	adminAddNonvoter = "add-nonvoter"
-	adminRemove      = "remove"
-	adminBackup      = "backup"
-	adminRestore     = "restore-binlog"
+	adminStatus          = "status"
+	adminAdd             = "add"
+	adminAddNonvoter     = "add-nonvoter"
+	adminRemove          = "remove"
+	adminBackup          = "backup"
+	adminRestore         = "restore-binlog"
+	adminMetaStatus      = "meta-status"
+	adminMetaBackup      = "meta-backup"
+	adminMetaRestore     = "meta-restore"
+	adminMetaAdd         = "meta-add"
+	adminMetaAddNonvoter = "meta-add-nonvoter"
 )
 
 type adminCmd struct {
@@ -30,11 +35,14 @@ type adminCmd struct {
 	addr  string
 	path  string
 	after uint64
+	// meta is true when the statement applies to the meta catalog, not the data group.
+	meta bool
 }
 
 // parseAdmin recognizes SHOW RAFT STATUS, RAFT ADD VOTER, RAFT ADD NONVOTER,
-// RAFT REMOVE SERVER, BACKUP TO, and RESTORE BINLOG FROM. The SQL parser does
-// not know these statements. Other statements return before the tokenizer runs.
+// RAFT REMOVE SERVER, BACKUP TO, RESTORE BINLOG FROM, and the meta-catalog
+// forms of those statements. The SQL parser does not know them. Other
+// statements return before the tokenizer runs.
 func parseAdmin(query string) (adminCmd, bool) {
 	q := strings.TrimSpace(query)
 	if strings.HasSuffix(q, ";") {
@@ -45,6 +53,9 @@ func parseAdmin(query string) (adminCmd, bool) {
 	}
 	if strings.EqualFold(q, "SHOW RAFT STATUS") {
 		return adminCmd{kind: adminStatus}, true
+	}
+	if strings.EqualFold(q, "SHOW META STATUS") {
+		return adminCmd{kind: adminMetaStatus, meta: true}, true
 	}
 	fields, err := splitAdmin(q)
 	if err != nil || len(fields) == 0 {
@@ -68,8 +79,18 @@ func parseAdmin(query string) (adminCmd, bool) {
 		}
 		return adminCmd{kind: adminRemove, id: fields[3]}, true
 	}
+	if len(fields) == 4 && strings.EqualFold(fields[0], "BACKUP") && strings.EqualFold(fields[1], "META") && strings.EqualFold(fields[2], "TO") && fields[3] != "" {
+		return adminCmd{kind: adminMetaBackup, path: fields[3], meta: true}, true
+	}
 	if len(fields) == 3 && strings.EqualFold(fields[0], "BACKUP") && strings.EqualFold(fields[1], "TO") && fields[2] != "" {
 		return adminCmd{kind: adminBackup, path: fields[2]}, true
+	}
+	if len(fields) == 7 && strings.EqualFold(fields[0], "RESTORE") && strings.EqualFold(fields[1], "META") && strings.EqualFold(fields[2], "BINLOG") && strings.EqualFold(fields[3], "FROM") && strings.EqualFold(fields[5], "AFTER") && fields[4] != "" {
+		after, err := strconv.ParseUint(fields[6], 10, 64)
+		if err != nil {
+			return adminCmd{}, false
+		}
+		return adminCmd{kind: adminMetaRestore, path: fields[4], after: after, meta: true}, true
 	}
 	if len(fields) == 6 && strings.EqualFold(fields[0], "RESTORE") && strings.EqualFold(fields[1], "BINLOG") && strings.EqualFold(fields[2], "FROM") && strings.EqualFold(fields[4], "AFTER") && fields[3] != "" {
 		after, err := strconv.ParseUint(fields[5], 10, 64)
@@ -78,15 +99,25 @@ func parseAdmin(query string) (adminCmd, bool) {
 		}
 		return adminCmd{kind: adminRestore, path: fields[3], after: after}, true
 	}
+	if len(fields) == 5 && strings.EqualFold(fields[0], "META") && strings.EqualFold(fields[1], "ADD") && (strings.EqualFold(fields[2], "VOTER") || strings.EqualFold(fields[2], "NONVOTER")) {
+		if fields[3] == "" || fields[4] == "" {
+			return adminCmd{}, false
+		}
+		kind := adminMetaAdd
+		if strings.EqualFold(fields[2], "NONVOTER") {
+			kind = adminMetaAddNonvoter
+		}
+		return adminCmd{kind: kind, id: fields[3], addr: fields[4], meta: true}, true
+	}
 	return adminCmd{}, false
 }
 
 // adminPrefix reports whether q can be a Raft admin statement.
 func adminPrefix(q string) bool {
-	if hasWordPrefix(q, "RAFT") || hasWordPrefix(q, "BACKUP") || hasWordPrefix(q, "RESTORE") {
+	if hasWordPrefix(q, "RAFT") || hasWordPrefix(q, "BACKUP") || hasWordPrefix(q, "RESTORE") || hasWordPrefix(q, "META") {
 		return true
 	}
-	return hasWordPrefix(q, "SHOW RAFT")
+	return hasWordPrefix(q, "SHOW RAFT") || hasWordPrefix(q, "SHOW META")
 }
 
 func hasWordPrefix(q, prefix string) bool {
@@ -184,9 +215,18 @@ func (h *adminHandler) ComStmtExecute(ctx context.Context, c *mysql.Conn, prepar
 	return h.Handler.ComStmtExecute(ctx, c, prepare, callback)
 }
 
-// runAdminLocal runs a Raft admin statement on this process.
+// runAdminLocal runs a data-group admin statement on this process.
+// Meta statements are refused here; the shard handler runs those on the catalog.
 func runAdminLocal(store *hardhatdb.Store, cmd adminCmd, callback mysql.ResultSpoolFn) error {
-	if cmd.kind != adminStatus && cmd.kind != adminBackup && !store.Replicating() {
+	if cmd.meta {
+		return mysql.NewSQLError(mysql.ERUnknownError, "HY000", "hardhatdb: meta catalog is not configured")
+	}
+	return finishAdmin(store, cmd, callback)
+}
+
+// finishAdmin runs cmd on store. The caller chooses the data group or the meta catalog.
+func finishAdmin(store *hardhatdb.Store, cmd adminCmd, callback mysql.ResultSpoolFn) error {
+	if cmd.kind != adminStatus && cmd.kind != adminMetaStatus && cmd.kind != adminBackup && cmd.kind != adminMetaBackup && !store.Replicating() {
 		return mysql.NewSQLError(mysql.ERUnknownError, "HY000", "hardhatdb: store is not replicating")
 	}
 	reply, err := runAdmin(store, cmd)
@@ -198,14 +238,14 @@ func runAdminLocal(store *hardhatdb.Store, cmd adminCmd, callback mysql.ResultSp
 
 func runAdmin(store *hardhatdb.Store, cmd adminCmd) (cluster.ForwardReply, error) {
 	switch cmd.kind {
-	case adminStatus:
+	case adminStatus, adminMetaStatus:
 		return statusReply(store), nil
-	case adminAdd:
+	case adminAdd, adminMetaAdd:
 		if err := store.AddVoter(cmd.id, cmd.addr); err != nil {
 			return cluster.ForwardReply{}, err
 		}
 		return cluster.ForwardReply{Info: "voter added"}, nil
-	case adminAddNonvoter:
+	case adminAddNonvoter, adminMetaAddNonvoter:
 		if err := store.AddNonvoter(cmd.id, cmd.addr); err != nil {
 			return cluster.ForwardReply{}, err
 		}
@@ -215,13 +255,13 @@ func runAdmin(store *hardhatdb.Store, cmd adminCmd) (cluster.ForwardReply, error
 			return cluster.ForwardReply{}, err
 		}
 		return cluster.ForwardReply{Info: "server removed"}, nil
-	case adminBackup:
+	case adminBackup, adminMetaBackup:
 		index, err := store.BackupTo(cmd.path)
 		if err != nil {
 			return cluster.ForwardReply{}, err
 		}
 		return indexReply(index), nil
-	case adminRestore:
+	case adminRestore, adminMetaRestore:
 		if !store.IsLeader() {
 			return cluster.ForwardReply{}, fmt.Errorf("hardhatdb: not the leader")
 		}

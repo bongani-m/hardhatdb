@@ -45,6 +45,33 @@ func TestParseAdmin(t *testing.T) {
 	require.False(t, ok)
 	_, ok = parseAdmin("RESTORE BINLOG FROM '/tmp/binlog' AFTER nope")
 	require.False(t, ok)
+
+	metaStatus, ok := parseAdmin(" show meta status ")
+	require.True(t, ok)
+	require.Equal(t, adminCmd{kind: adminMetaStatus, meta: true}, metaStatus)
+
+	metaBackup, ok := parseAdmin(`BACKUP META TO '/var/backups/meta'`)
+	require.True(t, ok)
+	require.Equal(t, adminCmd{kind: adminMetaBackup, path: "/var/backups/meta", meta: true}, metaBackup)
+
+	metaReplay, ok := parseAdmin(`RESTORE META BINLOG FROM '/var/backups/meta/binlog' AFTER 9`)
+	require.True(t, ok)
+	require.Equal(t, adminCmd{kind: adminMetaRestore, path: "/var/backups/meta/binlog", after: 9, meta: true}, metaReplay)
+
+	metaAdd, ok := parseAdmin(`META ADD VOTER 'g2' '10.1.0.6:7001'`)
+	require.True(t, ok)
+	require.Equal(t, adminCmd{kind: adminMetaAdd, id: "g2", addr: "10.1.0.6:7001", meta: true}, metaAdd)
+
+	metaNonvoter, ok := parseAdmin(`META ADD NONVOTER 'g4' '10.1.0.8:7001'`)
+	require.True(t, ok)
+	require.Equal(t, adminCmd{kind: adminMetaAddNonvoter, id: "g4", addr: "10.1.0.8:7001", meta: true}, metaNonvoter)
+
+	_, ok = parseAdmin("BACKUP META TO")
+	require.False(t, ok)
+	_, ok = parseAdmin("META ADD VOTER 'only-one'")
+	require.False(t, ok)
+	_, ok = parseAdmin("RESTORE META BINLOG FROM '/tmp/binlog' AFTER nope")
+	require.False(t, ok)
 }
 
 func TestLoadLimitsDefaults(t *testing.T) {

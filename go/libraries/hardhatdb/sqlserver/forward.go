@@ -180,6 +180,9 @@ func (h *forwardHandler) dispatch(ctx context.Context, c *mysql.Conn, query stri
 }
 
 func (h *forwardHandler) handleAdmin(c *mysql.Conn, query string, cmd adminCmd, callback mysql.ResultSpoolFn) error {
+	if cmd.meta {
+		return mysql.NewSQLError(mysql.ERUnknownError, "HY000", "hardhatdb: meta catalog is not configured")
+	}
 	if cmd.kind == adminStatus || h.store.IsLeader() || !h.store.Replicating() {
 		return runAdminLocal(h.store, cmd, callback)
 	}

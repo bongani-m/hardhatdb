@@ -8,6 +8,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/dolthub/vitess/go/mysql"
 	"github.com/dolthub/vitess/go/sqltypes"
@@ -170,7 +171,68 @@ func (h *partHandler) ComStmtExecute(ctx context.Context, c *mysql.Conn, prepare
 	})
 }
 
+// metaAdmin runs a catalog statement on the meta leader. A follower forwards
+// it the same way a data-group follower forwards RAFT admin statements.
+func (h *partHandler) metaAdmin(c *mysql.Conn, query string, cmd adminCmd, callback mysql.ResultSpoolFn) error {
+	if h.meta == nil {
+		return mysql.NewSQLError(mysql.ERUnknownError, "HY000", "hardhatdb: meta catalog is not configured")
+	}
+	if cmd.kind == adminMetaStatus || h.meta.IsLeader() || !h.meta.Replicating() {
+		return finishAdmin(h.meta, cmd, callback)
+	}
+	reply, err := forwardMeta(h.meta, c, query)
+	if err != nil {
+		return err
+	}
+	return spoolReply(reply, callback)
+}
+
+func forwardMeta(st *hardhatdb.Store, c *mysql.Conn, query string) (cluster.ForwardReply, error) {
+	deadline := time.Now().Add(st.ApplyTimeout())
+	var session uint64
+	var user, host string
+	if c != nil {
+		session = uint64(c.ConnectionID)
+		user = c.User
+		host = remoteHost(c)
+	}
+	var last error
+	for {
+		remain := time.Until(deadline)
+		if remain <= 0 {
+			if last == nil {
+				last = fmt.Errorf("hardhatdb: leader is unavailable")
+			}
+			return cluster.ForwardReply{}, last
+		}
+		client, err := st.DialForward()
+		if err != nil {
+			last = err
+			time.Sleep(20 * time.Millisecond)
+			continue
+		}
+		reply, err := client.Exec(cluster.ForwardRequest{
+			Node:    st.NodeID(),
+			Session: session,
+			User:    user,
+			Host:    host,
+			Query:   query,
+		}, remain)
+		client.Close(st.NodeID(), session)
+		if err != nil {
+			return cluster.ForwardReply{}, err
+		}
+		if reply.Err != "" {
+			return cluster.ForwardReply{}, mysql.NewSQLError(mysql.ERUnknownError, "HY000", "%s", reply.Err)
+		}
+		return reply, nil
+	}
+}
+
 func (h *partHandler) dispatch(ctx context.Context, c *mysql.Conn, query string, binds []cluster.ForwardBind, callback mysql.ResultSpoolFn) error {
+	if cmd, ok := parseAdmin(query); ok && cmd.meta {
+		return h.metaAdmin(c, query, cmd, callback)
+	}
 	if _, ok := parseAdmin(query); ok {
 		return h.forwardHandler.dispatch(ctx, c, query, binds, callback)
 	}
