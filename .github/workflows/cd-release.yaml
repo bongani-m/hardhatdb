@@ -1,6 +1,9 @@
 name: Release
 
 on:
+  push:
+    tags:
+      - "v*"
   workflow_dispatch:
     inputs:
       version:
@@ -12,8 +15,39 @@ permissions:
   contents: write
 
 jobs:
+  version:
+    name: Resolve version
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.resolve.outputs.version }}
+      prerelease: ${{ steps.resolve.outputs.prerelease }}
+    steps:
+      - name: Resolve version
+        id: resolve
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          INPUT_VERSION: ${{ inputs.version }}
+          REF_NAME: ${{ github.ref_name }}
+        run: |
+          if [ "$EVENT_NAME" = "workflow_dispatch" ]; then
+            version="$INPUT_VERSION"
+          else
+            version="$REF_NAME"
+          fi
+          if ! [[ "$version" =~ ^v[0-9]+\.[0-9]+\.[0-9]+([.-][0-9A-Za-z.]+)?$ ]]; then
+            echo "version must look like v0.1.0"
+            exit 1
+          fi
+          prerelease=false
+          if [[ "$version" == *-alpha* || "$version" == *-beta* || "$version" == *-rc* ]]; then
+            prerelease=true
+          fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "prerelease=$prerelease" >> "$GITHUB_OUTPUT"
+
   binaries:
     name: ${{ matrix.goos }}-${{ matrix.goarch }}
+    needs: version
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
@@ -61,22 +95,16 @@ jobs:
             echo "CGO_LDFLAGS=-L$(brew --prefix icu4c)/lib" >> "$GITHUB_ENV"
           fi
 
-      - name: Check version
-        run: |
-          if ! [[ "${{ inputs.version }}" =~ ^v[0-9]+\.[0-9]+\.[0-9]+([.-][0-9A-Za-z.]+)?$ ]]; then
-            echo "version must look like v0.1.0"
-            exit 1
-          fi
-
       - name: Build
         working-directory: hardhatdb/go
         env:
           CGO_ENABLED: "1"
           GOOS: ${{ matrix.goos }}
           GOARCH: ${{ matrix.goarch }}
+          VERSION: ${{ needs.version.outputs.version }}
         run: |
           go build -o "hardhatdb-${GOOS}-${GOARCH}" \
-            -ldflags "-X github.com/bongani-m/hardhatdb/go/cmd/hardhatdb/version.Version=${{ inputs.version }}" \
+            -ldflags "-X github.com/bongani-m/hardhatdb/go/cmd/hardhatdb/version.Version=${VERSION}" \
             ./cmd/hardhatdb
 
       - name: Upload binary
@@ -87,9 +115,14 @@ jobs:
 
   release:
     name: GitHub release
-    needs: binaries
+    needs: [version, binaries]
     runs-on: ubuntu-latest
     steps:
+      - name: Check out HardhatDB
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
       - name: Download binaries
         uses: actions/download-artifact@v4
         with:
@@ -100,14 +133,23 @@ jobs:
       - name: Publish release
         env:
           GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ needs.version.outputs.version }}
+          PRERELEASE: ${{ needs.version.outputs.prerelease }}
         run: |
-          gh release create "${{ inputs.version }}" dist/hardhatdb-* \
-            --repo "${{ github.repository }}" \
-            --title "${{ inputs.version }}" \
-            --notes "HardhatDB ${{ inputs.version }}"
+          repo="${{ github.repository }}"
+          if gh release view "$VERSION" --repo "$repo" >/dev/null 2>&1; then
+            gh release upload "$VERSION" dist/hardhatdb-* --repo "$repo" --clobber
+          else
+            args=(--repo "$repo" --title "$VERSION" --generate-notes)
+            if [ "$PRERELEASE" = "true" ]; then
+              args+=(--prerelease)
+            fi
+            gh release create "$VERSION" dist/hardhatdb-* "${args[@]}"
+          fi
 
   image:
     name: Docker image
+    needs: version
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -128,18 +170,24 @@ jobs:
 
       - name: Build image
         working-directory: hardhatdb
+        env:
+          VERSION: ${{ needs.version.outputs.version }}
         run: |
           docker build -f docker/Dockerfile \
             --build-context go-mysql-server=../go-mysql-server \
-            -t "hardhatdb:${{ inputs.version }}" .
+            -t "hardhatdb:${VERSION}" .
 
       - name: Push image
         env:
           GHCR_IMAGE: ghcr.io/${{ github.repository }}
+          VERSION: ${{ needs.version.outputs.version }}
+          PRERELEASE: ${{ needs.version.outputs.prerelease }}
         run: |
           image="$(printf '%s' "$GHCR_IMAGE" | tr '[:upper:]' '[:lower:]')"
           echo "${{ github.token }}" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
-          docker tag "hardhatdb:${{ inputs.version }}" "${image}:${{ inputs.version }}"
-          docker tag "hardhatdb:${{ inputs.version }}" "${image}:latest"
-          docker push "${image}:${{ inputs.version }}"
-          docker push "${image}:latest"
+          docker tag "hardhatdb:${VERSION}" "${image}:${VERSION}"
+          docker push "${image}:${VERSION}"
+          if [ "$PRERELEASE" != "true" ]; then
+            docker tag "hardhatdb:${VERSION}" "${image}:latest"
+            docker push "${image}:latest"
+          fi
