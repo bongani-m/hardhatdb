@@ -1,9 +1,6 @@
 package sqle
 
 import (
-	"bytes"
-	"encoding/binary"
-	"encoding/gob"
 	"errors"
 	"time"
 
@@ -33,10 +30,32 @@ const (
 type recordingTxn struct {
 	*badger.Txn
 	ops []kvOp
+	// idx is the latest op for each key this statement wrote. Those keys win
+	// over the in-flight overlay.
+	idx map[string]int
+}
+
+func (t *recordingTxn) note(op kvOp) {
+	if t.idx == nil {
+		t.idx = make(map[string]int)
+	}
+	t.idx[string(op.Key)] = len(t.ops)
+	t.ops = append(t.ops, op)
+}
+
+func (t *recordingTxn) lookup(key []byte) (kvOp, bool) {
+	if t == nil || t.idx == nil {
+		return kvOp{}, false
+	}
+	i, ok := t.idx[string(key)]
+	if !ok {
+		return kvOp{}, false
+	}
+	return t.ops[i], true
 }
 
 func (t *recordingTxn) Set(key, val []byte) error {
-	t.ops = append(t.ops, kvOp{
+	t.note(kvOp{
 		Key:   append([]byte(nil), key...),
 		Value: append([]byte(nil), val...),
 	})
@@ -44,7 +63,7 @@ func (t *recordingTxn) Set(key, val []byte) error {
 }
 
 func (t *recordingTxn) Delete(key []byte) error {
-	t.ops = append(t.ops, kvOp{
+	t.note(kvOp{
 		Key:    append([]byte(nil), key...),
 		Delete: true,
 	})
@@ -106,9 +125,10 @@ func batchRowChanges(batch replBatch) []rowChange {
 }
 
 // commit runs fn as the single writer. Without a cluster it commits directly.
-// With a cluster the leader records the writes, rolls them back, and queues
-// the batch. The lock is not held while Raft waits for a quorum, so the next
-// statement can record against the in-flight batches.
+// With a cluster the leader records the writes against the in-flight overlay,
+// rolls the local transaction back, and queues the batch. The lock is not held
+// while Raft waits for a quorum, so the next statement can record against the
+// batches still in flight.
 func (s *Store) commit(statement string, fn func(tx *kvTx) error) error {
 	return s.commitGTID(statement, "", fn)
 }
@@ -142,13 +162,11 @@ func (s *Store) commitGTID(statement, gtid string, fn func(tx *kvTx) error) erro
 func (s *Store) commitMarked(statement, gtid string, mode marked, fn func(tx *kvTx) error) error {
 	return s.group.CommitMarked(statement, gtid, mode, func(snap []kvOp) (replBatch, bool, error) {
 		rec := &recordingTxn{}
+		overlay := newKVOverlay(snap)
 		var rotate bool
 		err := s.badgerDB().Update(func(txn *badger.Txn) error {
-			if err := replayOps(txn, snap); err != nil {
-				return err
-			}
 			rec.Txn = txn
-			tx := &kvTx{txn: rec}
+			tx := &kvTx{txn: rec, overlay: overlay}
 			if err := fn(tx); err != nil {
 				return err
 			}
@@ -186,10 +204,15 @@ func putSourceGTID(tx *kvTx, gtid string) error {
 	return tx.root().Put(keySourceGTID, []byte(gtid))
 }
 
-// replayOps installs in-flight writes into txn so fn sees them. The sets go
-// to the Badger transaction directly and are not recorded as new operations.
-// The transaction still rolls back; Raft apply is what lands them.
-func replayOps(txn *badger.Txn, ops []kvOp) error {
+func encodeBatch(batch replBatch) ([]byte, error) {
+	return store.EncodeBatch(batch)
+}
+
+func decodeBatch(raw []byte) (replBatch, error) {
+	return store.DecodeBatch(raw)
+}
+
+func applyOpsTxn(txn *badger.Txn, ops []kvOp) error {
 	for _, op := range ops {
 		if op.Delete {
 			if err := txn.Delete(op.Key); err != nil && !errors.Is(err, badger.ErrKeyNotFound) {
@@ -204,41 +227,26 @@ func replayOps(txn *badger.Txn, ops []kvOp) error {
 	return nil
 }
 
-func encodeBatch(batch replBatch) ([]byte, error) {
-	var buf bytes.Buffer
-	if err := gob.NewEncoder(&buf).Encode(batch); err != nil {
-		return nil, err
-	}
-	return buf.Bytes(), nil
-}
-
-func decodeBatch(raw []byte) (replBatch, error) {
-	var batch replBatch
-	err := gob.NewDecoder(bytes.NewReader(raw)).Decode(&batch)
-	return batch, err
-}
-
 // applyOpsAt writes a committed batch into the local Badger and records index
 // in that same transaction. Puts and deletes are applied in order and are
 // safe to repeat for the same Raft index.
 func (s *Store) applyOpsAt(index uint64, ops []kvOp) error {
+	return s.applyOpsRun([]uint64{index}, [][]kvOp{ops})
+}
+
+// applyOpsRun writes a contiguous run of committed batches in one transaction.
+// The stored Raft index is the last entry in the run.
+func (s *Store) applyOpsRun(indexes []uint64, groups [][]kvOp) error {
+	if len(indexes) == 0 {
+		return nil
+	}
+	last := indexes[len(indexes)-1]
 	return s.badgerDB().Update(func(txn *badger.Txn) error {
-		for _, op := range ops {
-			if op.Delete {
-				if err := txn.Delete(op.Key); err != nil && !errors.Is(err, badger.ErrKeyNotFound) {
-					return err
-				}
-				continue
-			}
-			if err := txn.Set(op.Key, op.Value); err != nil {
+		for _, ops := range groups {
+			if err := applyOpsTxn(txn, ops); err != nil {
 				return err
 			}
 		}
-		if index == 0 {
-			return nil
-		}
-		var raw [8]byte
-		binary.BigEndian.PutUint64(raw[:], index)
-		return txn.Set(entryKey(nil, keyRaftApplied, kindValue), raw[:])
+		return putApplied(txn, last)
 	})
 }

@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"io"
 	"path/filepath"
+	"sync/atomic"
 	"time"
 
 	"github.com/bongani-m/hardhatdb/go/store"
@@ -69,6 +70,27 @@ func (s *Store) InstallBackup(r io.Reader) error {
 	return s.data.InstallBackup(r)
 }
 
+func (s *Store) CaptureSnapshot(dir string) (store.SnapFile, error) {
+	if s.data == nil {
+		return store.SnapFile{}, fmt.Errorf("hardhatdb: database is closed")
+	}
+	return s.data.CaptureSnapshot(dir)
+}
+
+func (s *Store) CommitSnapVersion(version uint64) error {
+	if s.data == nil {
+		return fmt.Errorf("hardhatdb: database is closed")
+	}
+	return s.data.CommitSnapVersion(version)
+}
+
+func (s *Store) SnapBase() string {
+	if s.raftDir == "" {
+		return ""
+	}
+	return filepath.Join(s.raftDir, "snap-base")
+}
+
 func (s *Store) NoteFSMApplied(index uint64) { s.noteFSMApplied(index) }
 
 func (s *Store) ReadRaftApplied() uint64 { return s.readRaftApplied() }
@@ -120,12 +142,47 @@ func (s *Store) ApplyOps(index uint64, ops []store.KVOp) error {
 	return s.applyOpsAt(index, ops)
 }
 
+func (s *Store) ApplyOpsRun(indexes []uint64, groups [][]store.KVOp) error {
+	ops := make([][]kvOp, len(groups))
+	for i := range groups {
+		ops[i] = groups[i]
+	}
+	return s.applyOpsRun(indexes, ops)
+}
+
 func (s *Store) ReloadPrivileges(batch store.ReplBatch, local bool) error {
 	return s.reloadPrivileges(batch, local)
 }
 
 func (s *Store) AppendBinlog(index uint64, batch store.ReplBatch) error {
 	return s.appendBinlog(index, batch)
+}
+
+func (s *Store) QueueBinlog(index uint64, batch store.ReplBatch, write, rotate bool) error {
+	if s.bin == nil {
+		return nil
+	}
+	return s.bin.enqueue(binlogJob{index: index, batch: batch, write: write, rotate: rotate})
+}
+
+func (s *Store) FlushBinlog(index uint64) error {
+	if s.bin == nil {
+		return nil
+	}
+	if err := s.bin.flush(); err != nil {
+		return err
+	}
+	if index > atomic.LoadUint64(&s.bin.watermark) {
+		return fmt.Errorf("hardhatdb: binlog watermark %d is behind %d", atomic.LoadUint64(&s.bin.watermark), index)
+	}
+	return nil
+}
+
+func (s *Store) BinlogWatermark() uint64 {
+	if s.bin == nil {
+		return 0
+	}
+	return atomic.LoadUint64(&s.bin.watermark)
 }
 
 func (s *Store) RotateBinlog() error { return s.rotateBinlog() }

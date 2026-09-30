@@ -1,11 +1,13 @@
 package sqle
 
 import (
+	"bytes"
 	"context"
 	"encoding/binary"
 	"errors"
 	"fmt"
 	"math"
+	"sort"
 
 	"github.com/bongani-m/hardhatdb/go/store"
 	"github.com/dgraph-io/badger/v4"
@@ -85,6 +87,35 @@ type kvTx struct {
 	txn kvTxn
 	// rotate asks the commit path to roll the binlog after this batch.
 	rotate bool
+	// overlay is the in-flight Raft batches the recording statement must see.
+	// It is nil for every other transaction, so committed reads never observe it.
+	overlay *kvOverlay
+}
+
+// kvOverlay is the last write for each key in batches that are recorded but
+// not yet applied. A later recording reads it instead of replaying those
+// writes into a Badger transaction that is thrown away.
+type kvOverlay struct {
+	byKey map[string]kvOp
+}
+
+func newKVOverlay(ops []kvOp) *kvOverlay {
+	if len(ops) == 0 {
+		return nil
+	}
+	o := &kvOverlay{byKey: make(map[string]kvOp, len(ops))}
+	for _, op := range ops {
+		o.byKey[string(op.Key)] = op
+	}
+	return o
+}
+
+func (o *kvOverlay) lookup(key []byte) (kvOp, bool) {
+	if o == nil {
+		return kvOp{}, false
+	}
+	op, ok := o.byKey[string(key)]
+	return op, ok
 }
 
 func (tx *kvTx) root() *kvBucket {
@@ -178,6 +209,42 @@ func (b *kvBucket) DeleteBucket(name []byte) error {
 // ForEach visits immediate keys and child buckets. A child bucket is reported
 // with a nil value, matching bbolt, so callers can tell buckets from keys.
 func (b *kvBucket) ForEach(fn func(k, v []byte) error) error {
+	if b.tx.overlay == nil {
+		return b.forEachStored(fn)
+	}
+	it := newKeyIter(b.tx, b.prefix, false)
+	defer it.Close()
+	for it.rewind(); it.valid(); it.next() {
+		key := it.key()
+		if bytesEqual(key, b.prefix) {
+			continue
+		}
+		if len(key) < len(b.prefix) || !bytesEqual(key[:len(b.prefix)], b.prefix) {
+			continue
+		}
+		name, kind, n, ok := parseComponent(key[len(b.prefix):])
+		if !ok || n != len(key)-len(b.prefix) {
+			continue
+		}
+		name = append([]byte(nil), name...)
+		if kind == kindBucket {
+			if err := fn(name, nil); err != nil {
+				return err
+			}
+			continue
+		}
+		val, err := it.value()
+		if err != nil {
+			return err
+		}
+		if err := fn(name, val); err != nil {
+			return err
+		}
+	}
+	return it.err
+}
+
+func (b *kvBucket) forEachStored(fn func(k, v []byte) error) error {
 	opts := badger.DefaultIteratorOptions
 	opts.Prefix = b.prefix
 	it := b.tx.txn.NewIterator(opts)
@@ -281,17 +348,32 @@ func (b *kvBucket) forEachRaw(fn func(k, v []byte) error) error {
 type rawIter struct {
 	it     *badger.Iterator
 	prefix []byte
+	// merged is set when in-flight keys share this prefix. Reads leave it nil.
+	merged *keyIter
 }
 
 func (b *kvBucket) rawIter(reverse bool) *rawIter {
 	opts := badger.DefaultIteratorOptions
 	opts.Prefix = append(append([]byte(nil), b.prefix...), rawMark...)
 	opts.Reverse = reverse
-	return &rawIter{it: b.tx.txn.NewIterator(opts), prefix: opts.Prefix}
+	it := b.tx.txn.NewIterator(opts)
+	extra := b.tx.overlayPrefix(opts.Prefix)
+	if len(extra) == 0 {
+		return &rawIter{it: it, prefix: opts.Prefix}
+	}
+	return &rawIter{
+		it:     it,
+		prefix: opts.Prefix,
+		merged: &keyIter{it: it, prefix: opts.Prefix, extra: extra, reverse: reverse},
+	}
 }
 
 func (it *rawIter) Seek(key []byte) {
 	target := append(append([]byte(nil), it.prefix...), key...)
+	if it.merged != nil {
+		it.merged.seek(target)
+		return
+	}
 	it.it.Seek(target)
 }
 
@@ -303,21 +385,52 @@ func (it *rawIter) seekEnd() {
 	if end == nil {
 		end = append(append([]byte(nil), it.prefix...), 0)
 	}
+	if it.merged != nil {
+		it.merged.seek(end)
+		return
+	}
 	it.it.Seek(end)
 }
 
-func (it *rawIter) Rewind() { it.it.Rewind() }
+func (it *rawIter) Rewind() {
+	if it.merged != nil {
+		it.merged.rewind()
+		return
+	}
+	it.it.Rewind()
+}
 
-func (it *rawIter) Valid() bool { return it.it.ValidForPrefix(it.prefix) }
+func (it *rawIter) Valid() bool {
+	if it.merged != nil {
+		return it.merged.valid()
+	}
+	return it.it.ValidForPrefix(it.prefix)
+}
 
-func (it *rawIter) Next() { it.it.Next() }
+func (it *rawIter) Next() {
+	if it.merged != nil {
+		it.merged.next()
+		return
+	}
+	it.it.Next()
+}
 
 func (it *rawIter) Key() []byte {
+	if it.merged != nil {
+		full := it.merged.key()
+		if len(full) < len(it.prefix) {
+			return nil
+		}
+		return append([]byte(nil), full[len(it.prefix):]...)
+	}
 	full := it.it.Item().Key()
 	return append([]byte(nil), full[len(it.prefix):]...)
 }
 
 func (it *rawIter) Value() ([]byte, error) {
+	if it.merged != nil {
+		return it.merged.value()
+	}
 	return it.it.Item().ValueCopy(nil)
 }
 
@@ -336,6 +449,20 @@ func (b *kvBucket) NextSequence() (uint64, error) {
 }
 
 func (tx *kvTx) get(key []byte) ([]byte, error) {
+	if rec, ok := tx.txn.(*recordingTxn); ok {
+		if op, found := rec.lookup(key); found {
+			if op.Delete {
+				return nil, nil
+			}
+			return cloneBytes(op.Value), nil
+		}
+	}
+	if op, found := tx.overlay.lookup(key); found {
+		if op.Delete {
+			return nil, nil
+		}
+		return cloneBytes(op.Value), nil
+	}
 	item, err := tx.txn.Get(key)
 	if errors.Is(err, badger.ErrKeyNotFound) {
 		return nil, nil
@@ -347,19 +474,243 @@ func (tx *kvTx) get(key []byte) ([]byte, error) {
 }
 
 func (tx *kvTx) deletePrefix(prefix []byte) error {
-	opts := badger.DefaultIteratorOptions
-	opts.Prefix = prefix
-	opts.PrefetchValues = false
-	it := tx.txn.NewIterator(opts)
 	var keys [][]byte
-	for it.Rewind(); it.Valid(); it.Next() {
-		keys = append(keys, it.Item().KeyCopy(nil))
+	if tx.overlay != nil {
+		it := newKeyIter(tx, prefix, false)
+		for it.rewind(); it.valid(); it.next() {
+			keys = append(keys, cloneBytes(it.key()))
+		}
+		it.Close()
+		if it.err != nil {
+			return it.err
+		}
+	} else {
+		opts := badger.DefaultIteratorOptions
+		opts.Prefix = prefix
+		opts.PrefetchValues = false
+		it := tx.txn.NewIterator(opts)
+		for it.Rewind(); it.Valid(); it.Next() {
+			keys = append(keys, it.Item().KeyCopy(nil))
+		}
+		it.Close()
 	}
-	it.Close()
 	for _, key := range keys {
 		if err := tx.txn.Delete(key); err != nil {
 			return err
 		}
 	}
 	return nil
+}
+
+// overlayPrefix returns in-flight ops under prefix, sorted by key. Keys this
+// statement already wrote stay out: the Badger transaction is the newer copy.
+func (tx *kvTx) overlayPrefix(prefix []byte) []kvOp {
+	if tx.overlay == nil {
+		return nil
+	}
+	var touched map[string]int
+	if rec, ok := tx.txn.(*recordingTxn); ok {
+		touched = rec.idx
+	}
+	var out []kvOp
+	for k, op := range tx.overlay.byKey {
+		if !bytes.HasPrefix(op.Key, prefix) {
+			continue
+		}
+		if touched != nil {
+			if _, ok := touched[k]; ok {
+				continue
+			}
+		}
+		out = append(out, op)
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	sort.Slice(out, func(i, j int) bool {
+		return bytes.Compare(out[i].Key, out[j].Key) < 0
+	})
+	return out
+}
+
+func cloneBytes(b []byte) []byte {
+	out := make([]byte, len(b))
+	copy(out, b)
+	return out
+}
+
+const (
+	srcNone = iota
+	srcBadger
+	srcExtra
+	srcBoth
+)
+
+// keyIter merges a Badger prefix scan with in-flight keys. Deletes in the
+// overlay hide the committed copy. The Badger iterator still supplies keys
+// this statement wrote, which are omitted from extra.
+type keyIter struct {
+	it      *badger.Iterator
+	prefix  []byte
+	extra   []kvOp
+	reverse bool
+	ei      int
+	src     int
+	curOK   bool
+	curKey  []byte
+	curVal  []byte
+	err     error
+}
+
+func newKeyIter(tx *kvTx, prefix []byte, reverse bool) *keyIter {
+	opts := badger.DefaultIteratorOptions
+	opts.Prefix = prefix
+	opts.Reverse = reverse
+	return &keyIter{
+		it:      tx.txn.NewIterator(opts),
+		prefix:  prefix,
+		extra:   tx.overlayPrefix(prefix),
+		reverse: reverse,
+	}
+}
+
+func (it *keyIter) Close() { it.it.Close() }
+
+func (it *keyIter) rewind() {
+	it.it.Rewind()
+	if it.reverse {
+		it.ei = len(it.extra) - 1
+	} else {
+		it.ei = 0
+	}
+	it.pull()
+}
+
+func (it *keyIter) seek(full []byte) {
+	it.it.Seek(full)
+	it.ei = it.search(full)
+	it.pull()
+}
+
+func (it *keyIter) search(full []byte) int {
+	if !it.reverse {
+		return sort.Search(len(it.extra), func(i int) bool {
+			return bytes.Compare(it.extra[i].Key, full) >= 0
+		})
+	}
+	i := sort.Search(len(it.extra), func(i int) bool {
+		return bytes.Compare(it.extra[i].Key, full) > 0
+	})
+	return i - 1
+}
+
+func (it *keyIter) valid() bool { return it.curOK }
+
+func (it *keyIter) next() {
+	switch it.src {
+	case srcBadger:
+		it.it.Next()
+	case srcExtra:
+		it.stepExtra()
+	case srcBoth:
+		it.it.Next()
+		it.stepExtra()
+	}
+	it.src = srcNone
+	it.pull()
+}
+
+func (it *keyIter) key() []byte { return it.curKey }
+
+func (it *keyIter) value() ([]byte, error) {
+	if it.err != nil {
+		return nil, it.err
+	}
+	return cloneBytes(it.curVal), nil
+}
+
+func (it *keyIter) extraOK() bool {
+	return it.ei >= 0 && it.ei < len(it.extra)
+}
+
+func (it *keyIter) stepExtra() {
+	if it.reverse {
+		it.ei--
+		return
+	}
+	it.ei++
+}
+
+func (it *keyIter) pull() {
+	it.curOK = false
+	it.src = srcNone
+	for {
+		bOK := it.it.ValidForPrefix(it.prefix)
+		eOK := it.extraOK()
+		if !bOK && !eOK {
+			return
+		}
+		if bOK && eOK {
+			cmp := bytes.Compare(it.it.Item().Key(), it.extra[it.ei].Key)
+			if it.reverse {
+				cmp = -cmp
+			}
+			if cmp == 0 {
+				op := it.extra[it.ei]
+				if op.Delete {
+					it.it.Next()
+					it.stepExtra()
+					continue
+				}
+				it.takeExtra(srcBoth)
+				return
+			}
+			if cmp < 0 {
+				it.takeBadger()
+				return
+			}
+			if it.extra[it.ei].Delete {
+				it.stepExtra()
+				continue
+			}
+			it.takeExtra(srcExtra)
+			return
+		}
+		if bOK {
+			it.takeBadger()
+			return
+		}
+		if it.extra[it.ei].Delete {
+			it.stepExtra()
+			continue
+		}
+		it.takeExtra(srcExtra)
+		return
+	}
+}
+
+func (it *keyIter) takeBadger() {
+	item := it.it.Item()
+	it.curKey = item.KeyCopy(nil)
+	val, err := item.ValueCopy(nil)
+	if err != nil {
+		it.err = err
+		it.curOK = true
+		it.src = srcBadger
+		return
+	}
+	if val == nil {
+		val = []byte{}
+	}
+	it.curVal = val
+	it.curOK = true
+	it.src = srcBadger
+}
+
+func (it *keyIter) takeExtra(src int) {
+	op := it.extra[it.ei]
+	it.curKey = cloneBytes(op.Key)
+	it.curVal = cloneBytes(op.Value)
+	it.curOK = true
+	it.src = src
 }

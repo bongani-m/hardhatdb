@@ -108,7 +108,12 @@ func OpenWithOptions(path string, opts OpenOptions) (*Store, error) {
 		return nil, err
 	}
 	db.StartGC()
-	return &Store{data: db}, nil
+	s := &Store{data: db}
+	if err := s.migrateDecisions(); err != nil {
+		_ = db.Close()
+		return nil, err
+	}
+	return s, nil
 }
 
 // badgerDB returns the open database. A snapshot restore swaps it under dbMu.

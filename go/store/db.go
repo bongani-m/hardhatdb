@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"strconv"
 	"sync"
 	"time"
 
@@ -17,6 +18,19 @@ import (
 // at twice this size, so 64 MiB keeps a fresh directory near 128 MiB instead
 // of the default 2 GiB.
 const valueLogFileSize int64 = 64 << 20
+
+// snapMagic marks a snapshot written by CaptureSnapshot. Older backups start
+// with a Badger version word instead, which InstallBackup still accepts.
+const snapMagic uint64 = 0x31424848
+
+// SnapFile is one point-in-time Badger backup. Full is set when Since is zero.
+// Version is the token the next incremental snapshot passes as since.
+type SnapFile struct {
+	Path    string
+	Full    bool
+	Since   uint64
+	Version uint64
+}
 
 // DB is one Badger directory. A snapshot restore swaps the handle under mu.
 type DB struct {
@@ -99,40 +113,155 @@ func (d *DB) Close() error {
 }
 
 // WriteBackup writes the stream InstallBackup reads: an 8-byte little-endian
-// Badger version, then a full backup. w does not need to be seekable.
+// header, then a full backup. The header is zero; the Badger stream follows.
+// w does not need to be seekable.
 func (d *DB) WriteBackup(w io.Writer) error {
 	db := d.Badger()
 	if db == nil {
 		return fmt.Errorf("hardhatdb: database is closed")
 	}
-	tmp, err := os.CreateTemp("", "hardhatdb-backup-*")
-	if err != nil {
+	var hdr [8]byte
+	if _, err := w.Write(hdr[:]); err != nil {
 		return err
 	}
-	name := tmp.Name()
-	defer os.Remove(name)
-	defer tmp.Close()
-	if _, err := tmp.Seek(8, io.SeekStart); err != nil {
-		return err
-	}
-	version, err := db.Backup(tmp, 0)
-	if err != nil {
-		return err
-	}
-	if _, err := tmp.Seek(0, io.SeekStart); err != nil {
-		return err
-	}
-	if err := binary.Write(tmp, binary.LittleEndian, version); err != nil {
-		return err
-	}
-	if err := tmp.Sync(); err != nil {
-		return err
-	}
-	if _, err := tmp.Seek(0, io.SeekStart); err != nil {
-		return err
-	}
-	_, err = io.Copy(w, tmp)
+	_, err := db.Backup(w, 0)
 	return err
+}
+
+// CaptureSnapshot writes one snapshot file in dir. The first snapshot for a
+// directory is a full backup. Later snapshots are the delta since the version
+// committed by the previous snapshot.
+func (d *DB) CaptureSnapshot(dir string) (SnapFile, error) {
+	db := d.Badger()
+	if db == nil {
+		return SnapFile{}, fmt.Errorf("hardhatdb: database is closed")
+	}
+	if err := d.Sync(); err != nil {
+		return SnapFile{}, err
+	}
+	f, err := os.CreateTemp(dir, "snap-")
+	if err != nil {
+		return SnapFile{}, err
+	}
+	since := d.readSnapVersion()
+	version, err := writeSnap(f, db, since)
+	if err != nil {
+		_ = f.Close()
+		_ = os.Remove(f.Name())
+		return SnapFile{}, err
+	}
+	if err := f.Close(); err != nil {
+		_ = os.Remove(f.Name())
+		return SnapFile{}, err
+	}
+	// SinceTs skips versions less than or equal to this token, so the returned
+	// max version is the right since value for the next snapshot.
+	return SnapFile{Path: f.Name(), Full: since == 0, Since: since, Version: version}, nil
+}
+
+// CommitSnapVersion records the since token for the next incremental snapshot.
+func (d *DB) CommitSnapVersion(version uint64) error {
+	return os.WriteFile(d.snapVerPath(), []byte(strconv.FormatUint(version, 10)), 0o644)
+}
+
+func (d *DB) snapVerPath() string { return d.path + ".snapver" }
+
+func (d *DB) readSnapVersion() uint64 {
+	raw, err := os.ReadFile(d.snapVerPath())
+	if err != nil {
+		return 0
+	}
+	n, err := strconv.ParseUint(string(raw), 10, 64)
+	if err != nil {
+		return 0
+	}
+	return n
+}
+
+func writeSnap(f *os.File, db *badger.DB, since uint64) (uint64, error) {
+	kind := uint64(1)
+	if since != 0 {
+		kind = 2
+	}
+	hdr := make([]byte, 32)
+	binary.LittleEndian.PutUint64(hdr[0:8], snapMagic)
+	binary.LittleEndian.PutUint64(hdr[8:16], kind)
+	binary.LittleEndian.PutUint64(hdr[16:24], since)
+	if _, err := f.Write(hdr); err != nil {
+		return 0, err
+	}
+	version, err := db.Backup(f, since)
+	if err != nil {
+		return 0, err
+	}
+	binary.LittleEndian.PutUint64(hdr[24:32], version)
+	if _, err := f.WriteAt(hdr, 0); err != nil {
+		return 0, err
+	}
+	if err := f.Sync(); err != nil {
+		return 0, err
+	}
+	return version, nil
+}
+
+// MaterializeFull loads a full base and a delta into a scratch directory and
+// writes one full snapshot. An empty joiner can install that image.
+func MaterializeFull(base, delta string, w io.Writer) error {
+	dir, err := os.MkdirTemp("", "hardhatdb-snap-")
+	if err != nil {
+		return err
+	}
+	defer os.RemoveAll(dir)
+	db, err := openBadger(dir, false)
+	if err != nil {
+		return err
+	}
+	defer db.Close()
+	if err := loadSnap(db, base); err != nil {
+		return err
+	}
+	if err := loadSnap(db, delta); err != nil {
+		return err
+	}
+	out, err := os.CreateTemp("", "hardhatdb-full-")
+	if err != nil {
+		return err
+	}
+	name := out.Name()
+	defer os.Remove(name)
+	if _, err := writeSnap(out, db, 0); err != nil {
+		out.Close()
+		return err
+	}
+	if err := out.Close(); err != nil {
+		return err
+	}
+	f, err := os.Open(name)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+	_, err = io.Copy(w, f)
+	return err
+}
+
+func loadSnap(db *badger.DB, path string) error {
+	f, err := os.Open(path)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+	var word uint64
+	if err := binary.Read(f, binary.LittleEndian, &word); err != nil {
+		return err
+	}
+	if word == snapMagic {
+		var skip [24]byte
+		if _, err := io.ReadFull(f, skip[:]); err != nil {
+			return err
+		}
+	}
+	return db.Load(f, 256)
 }
 
 // Sync fsyncs Badger when commits themselves do not.
@@ -198,10 +327,44 @@ func (d *DB) rewriteValueLog() {
 // Load merges into whatever is already open, so the replacement starts from
 // an empty sibling directory and is renamed into place only after Load succeeds.
 func (d *DB) InstallBackup(r io.Reader) error {
-	var version uint64
-	if err := binary.Read(r, binary.LittleEndian, &version); err != nil {
+	var word uint64
+	if err := binary.Read(r, binary.LittleEndian, &word); err != nil {
 		return err
 	}
+	if word == snapMagic {
+		var kind, since, version uint64
+		if err := binary.Read(r, binary.LittleEndian, &kind); err != nil {
+			return err
+		}
+		if err := binary.Read(r, binary.LittleEndian, &since); err != nil {
+			return err
+		}
+		if err := binary.Read(r, binary.LittleEndian, &version); err != nil {
+			return err
+		}
+		if kind == 2 {
+			local := d.readSnapVersion()
+			if local != since {
+				return fmt.Errorf("hardhatdb: snapshot base %d does not match local %d", since, local)
+			}
+			db := d.Badger()
+			if db == nil {
+				return fmt.Errorf("hardhatdb: database is closed")
+			}
+			if err := db.Load(r, 256); err != nil {
+				return err
+			}
+			return d.CommitSnapVersion(version)
+		}
+		if err := d.installFull(r); err != nil {
+			return err
+		}
+		return d.CommitSnapVersion(version)
+	}
+	return d.installFull(r)
+}
+
+func (d *DB) installFull(r io.Reader) error {
 	restorePath := d.path + ".restore"
 	if err := os.RemoveAll(restorePath); err != nil {
 		return err

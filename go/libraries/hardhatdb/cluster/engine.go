@@ -30,8 +30,15 @@ type Engine interface {
 	DropPrepared(index uint64, id string) error
 	TakePrepared(index uint64, id string) (store.ReplBatch, error)
 	ApplyOps(index uint64, ops []store.KVOp) error
+	ApplyOpsRun(indexes []uint64, groups [][]store.KVOp) error
 	ReloadPrivileges(batch store.ReplBatch, local bool) error
 	AppendBinlog(index uint64, batch store.ReplBatch) error
+	QueueBinlog(index uint64, batch store.ReplBatch, write, rotate bool) error
+	FlushBinlog(index uint64) error
+	BinlogWatermark() uint64
 	RotateBinlog() error
 	ReloadPrivilegesFromDisk() error
+	CaptureSnapshot(dir string) (store.SnapFile, error)
+	CommitSnapVersion(version uint64) error
+	SnapBase() string
 }

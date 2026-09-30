@@ -115,52 +115,101 @@ func (s *Store) NextCommit() (uint64, error) {
 	return n, err
 }
 
+func decisionName(id string) []byte {
+	return append([]byte("txnDecision\x00"), id...)
+}
+
 // SaveDecision replicates the outcome of one cross-range transaction.
+// Each decision is its own key, so the write does not grow with history.
 func (s *Store) SaveDecision(d TxnDecision) error {
 	if d.ID == "" {
 		return fmt.Errorf("hardhatdb: decision id is empty")
 	}
+	raw, err := json.Marshal(d)
+	if err != nil {
+		return err
+	}
 	return s.update(func(tx *kvTx) error {
-		list, err := readDecisions(tx)
-		if err != nil {
+		if err := migrateDecisions(tx); err != nil {
 			return err
 		}
-		replaced := false
-		for i := range list {
-			if list[i].ID == d.ID {
-				list[i] = d
-				replaced = true
-				break
-			}
-		}
-		if !replaced {
-			list = append(list, d)
-		}
-		raw, err := json.Marshal(list)
-		if err != nil {
+		return tx.root().Put(decisionName(d.ID), raw)
+	})
+}
+
+// DeleteDecision drops a decision after every range has finished it.
+func (s *Store) DeleteDecision(id string) error {
+	if id == "" {
+		return nil
+	}
+	return s.update(func(tx *kvTx) error {
+		if err := migrateDecisions(tx); err != nil {
 			return err
 		}
-		return tx.root().Put(keyDecisions, raw)
+		return tx.root().Delete(decisionName(id))
 	})
 }
 
 // Decision reads one transaction outcome. ok is false when meta has no record.
 func (s *Store) Decision(id string) (TxnDecision, bool, error) {
+	var d TxnDecision
+	var ok bool
+	err := s.view(func(tx *kvTx) error {
+		raw := tx.root().Get(decisionName(id))
+		if len(raw) > 0 {
+			ok = true
+			return json.Unmarshal(raw, &d)
+		}
+		list, err := readDecisions(tx)
+		if err != nil {
+			return err
+		}
+		for _, item := range list {
+			if item.ID == id {
+				d = item
+				ok = true
+				return nil
+			}
+		}
+		return nil
+	})
+	if err != nil {
+		return TxnDecision{}, false, err
+	}
+	return d, ok, nil
+}
+
+// migrateDecisions splits a leftover JSON array into one key per decision.
+func (s *Store) migrateDecisions() error {
 	var list []TxnDecision
 	err := s.view(func(tx *kvTx) error {
 		var err error
 		list, err = readDecisions(tx)
 		return err
 	})
-	if err != nil {
-		return TxnDecision{}, false, err
+	if err != nil || len(list) == 0 {
+		return err
+	}
+	return s.update(func(tx *kvTx) error {
+		return migrateDecisions(tx)
+	})
+}
+
+func migrateDecisions(tx *kvTx) error {
+	list, err := readDecisions(tx)
+	if err != nil || len(list) == 0 {
+		return err
 	}
 	for _, d := range list {
-		if d.ID == id {
-			return d, true, nil
+		raw, err := json.Marshal(d)
+		if err != nil {
+			return err
+		}
+		if err := tx.root().Put(decisionName(d.ID), raw); err != nil {
+			return err
 		}
 	}
-	return TxnDecision{}, false, nil
+	return tx.root().Delete(keyDecisions)
 }
 
 func readDecisions(tx *kvTx) ([]TxnDecision, error) {
@@ -197,7 +246,7 @@ func FinishTwoPhase(meta *Store, id string, stores []*Store, crash string) error
 			return err
 		}
 	}
-	return nil
+	return meta.DeleteDecision(id)
 }
 
 // AbortTwoPhase records an abort and drops every prepared batch.
@@ -210,7 +259,7 @@ func AbortTwoPhase(meta *Store, id string, stores []*Store) error {
 			return err
 		}
 	}
-	return nil
+	return meta.DeleteDecision(id)
 }
 
 // RecoverTwoPhase finishes prepared transactions from the meta decision.
@@ -240,6 +289,11 @@ func RecoverTwoPhase(meta *Store, stores []*Store) error {
 				continue
 			}
 			if err := st.CommitPrepared(id, d.Commit); err != nil {
+				return err
+			}
+		}
+		if ok {
+			if err := meta.DeleteDecision(id); err != nil {
 				return err
 			}
 		}

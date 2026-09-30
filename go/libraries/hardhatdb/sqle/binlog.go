@@ -11,6 +11,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/dolthub/vitess/go/mysql"
@@ -43,6 +44,20 @@ type binlog struct {
 	maxBytes    uint64
 	notify      chan struct{}
 	replicas    []registeredReplica
+	jobs        chan binlogJob
+	stopped     chan struct{}
+	watermark   uint64
+	writeErr    atomic.Value
+}
+
+// binlogJob is one applied Raft entry waiting to be exported. write is false
+// for prepare and abort, which only advance the watermark. done is a flush.
+type binlogJob struct {
+	index  uint64
+	batch  replBatch
+	write  bool
+	rotate bool
+	done   chan error
 }
 
 type registeredReplica struct {
@@ -85,11 +100,14 @@ func openBinlog(dir, serverUUID string, maxBytes uint64) (*binlog, error) {
 			b.file.Close()
 			return nil, err
 		}
+		b.loadWatermark()
+		b.start()
 		return b, nil
 	}
 	if err := b.loadExecutedLocked(); err != nil {
 		return nil, err
 	}
+	b.loadWatermark()
 	last := names[len(names)-1]
 	path := filepath.Join(dir, last)
 	file, err := os.OpenFile(path, os.O_RDWR, 0o644)
@@ -126,6 +144,7 @@ func openBinlog(dir, serverUUID string, maxBytes uint64) (*binlog, error) {
 		file.Close()
 		return nil, err
 	}
+	b.start()
 	return b, nil
 }
 
@@ -184,11 +203,166 @@ func (b *binlog) unlock() {
 
 func (b *binlog) close() {
 	b.lock()
-	defer b.unlock()
+	jobs := b.jobs
+	b.jobs = nil
+	b.unlock()
+	if jobs != nil {
+		close(jobs)
+		<-b.stopped
+	}
+	b.lock()
+	var syncErr error
 	if b.file != nil {
+		syncErr = b.file.Sync()
 		b.file.Close()
 		b.file = nil
 	}
+	b.unlock()
+	if syncErr == nil {
+		_ = b.syncWatermark()
+	}
+}
+
+func (b *binlog) start() {
+	b.jobs = make(chan binlogJob, 256)
+	b.stopped = make(chan struct{})
+	go b.loop(b.jobs)
+}
+
+func (b *binlog) loop(jobs <-chan binlogJob) {
+	defer close(b.stopped)
+	for job := range jobs {
+		if job.done != nil {
+			b.lock()
+			var syncErr error
+			if b.file != nil {
+				syncErr = b.file.Sync()
+			}
+			b.unlock()
+			if syncErr != nil {
+				b.writeErr.Store(syncErr)
+			} else if err := b.syncWatermark(); err != nil {
+				b.writeErr.Store(err)
+			}
+			job.done <- b.err()
+			continue
+		}
+		var err error
+		if job.write {
+			err = b.append(job.index, job.batch)
+		} else if job.index > 0 {
+			b.noteWatermark(job.index)
+		}
+		if err == nil && job.rotate {
+			err = b.rotate()
+		}
+		if err != nil {
+			b.writeErr.Store(err)
+			continue
+		}
+		if job.write && job.index > 0 {
+			b.noteWatermark(job.index)
+		}
+	}
+}
+
+func (b *binlog) err() error {
+	v := b.writeErr.Load()
+	if v == nil {
+		return nil
+	}
+	err, _ := v.(error)
+	return err
+}
+
+func (b *binlog) enqueue(job binlogJob) error {
+	b.lock()
+	jobs := b.jobs
+	b.unlock()
+	if jobs == nil {
+		if job.write {
+			if err := b.append(job.index, job.batch); err != nil {
+				return err
+			}
+		} else if job.index > 0 {
+			b.noteWatermark(job.index)
+		}
+		if job.rotate {
+			return b.rotate()
+		}
+		return nil
+	}
+	jobs <- job
+	return nil
+}
+
+func (b *binlog) flush() error {
+	b.lock()
+	jobs := b.jobs
+	b.unlock()
+	if jobs == nil {
+		return b.err()
+	}
+	done := make(chan error, 1)
+	jobs <- binlogJob{done: done}
+	return <-done
+}
+
+func (b *binlog) noteWatermark(index uint64) {
+	for {
+		cur := atomic.LoadUint64(&b.watermark)
+		if index <= cur || atomic.CompareAndSwapUint64(&b.watermark, cur, index) {
+			return
+		}
+	}
+}
+
+func (b *binlog) syncWatermark() error {
+	f, err := os.OpenFile(b.watermarkPath(), os.O_RDWR|os.O_CREATE, 0o644)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+	if err := f.Truncate(0); err != nil {
+		return err
+	}
+	if _, err := f.WriteString(strconv.FormatUint(atomic.LoadUint64(&b.watermark), 10)); err != nil {
+		return err
+	}
+	return f.Sync()
+}
+
+func (b *binlog) watermarkPath() string {
+	return filepath.Join(b.dir, "watermark")
+}
+
+func (b *binlog) loadWatermark() {
+	var fromFile uint64
+	raw, err := os.ReadFile(b.watermarkPath())
+	if err == nil {
+		fromFile, _ = strconv.ParseUint(strings.TrimSpace(string(raw)), 10, 64)
+	}
+	fromLog := maxExecuted(b.executed)
+	if fromLog > fromFile {
+		fromFile = fromLog
+	}
+	atomic.StoreUint64(&b.watermark, fromFile)
+}
+
+func maxExecuted(set mysql.Mysql56GTIDSet) uint64 {
+	var max uint64
+	for _, field := range strings.FieldsFunc(set.String(), func(r rune) bool {
+		return r == ':' || r == '-' || r == ','
+	}) {
+		n, err := strconv.ParseUint(field, 10, 64)
+		if err != nil {
+			continue
+		}
+		if n > max {
+			max = n
+		}
+	}
+	return max
 }
 
 func (b *binlog) writeBootstrapLocked(prev mysql.Mysql56GTIDSet) error {
@@ -323,6 +497,7 @@ func (b *binlog) append(index uint64, batch replBatch) error {
 	b.lock()
 	if b.executed.ContainsGTID(gtid) {
 		b.unlock()
+		b.noteWatermark(index)
 		return nil
 	}
 	b.unlock()
@@ -331,11 +506,13 @@ func (b *binlog) append(index uint64, batch replBatch) error {
 		return err
 	}
 	if len(events) == 0 {
+		b.noteWatermark(index)
 		return nil
 	}
 	b.lock()
 	defer b.unlock()
 	if b.executed.ContainsGTID(gtid) {
+		b.noteWatermark(index)
 		return nil
 	}
 	for _, ev := range events {
@@ -355,6 +532,7 @@ func (b *binlog) append(index uint64, batch replBatch) error {
 		return err
 	}
 	b.signal()
+	b.noteWatermark(index)
 	return nil
 }
 
@@ -832,6 +1010,9 @@ func (s *Store) ReadBinlog() ([]mysql.BinlogEvent, mysql.BinlogFormat, error) {
 	if s.bin == nil {
 		return nil, mysql.BinlogFormat{}, fmt.Errorf("hardhatdb: binlog is not enabled")
 	}
+	if err := s.bin.flush(); err != nil {
+		return nil, mysql.BinlogFormat{}, err
+	}
 	return s.bin.read()
 }
 
@@ -873,6 +1054,9 @@ func (s *Store) BinlogDumpGtid(ctx *sql.Context, conn *mysql.Conn, executed mysq
 				return ctx.Err()
 			default:
 			}
+		}
+		if err := b.flush(); err != nil {
+			return err
 		}
 		names := b.fileNames()
 		if fileIdx >= len(names) {
@@ -948,6 +1132,9 @@ func (s *Store) ListBinaryLogs(*sql.Context) ([]binlogreplication.BinaryLogFileM
 	if err != nil {
 		return nil, nil
 	}
+	if err := b.flush(); err != nil {
+		return nil, err
+	}
 	names := b.fileNames()
 	out := make([]binlogreplication.BinaryLogFileMetadata, 0, len(names))
 	for _, name := range names {
@@ -968,6 +1155,9 @@ func (s *Store) GetBinaryLogStatus(*sql.Context) ([]binlogreplication.BinaryLogS
 	b, err := s.binlogOrErr()
 	if err != nil {
 		return nil, nil
+	}
+	if err := b.flush(); err != nil {
+		return nil, err
 	}
 	b.lock()
 	defer b.unlock()

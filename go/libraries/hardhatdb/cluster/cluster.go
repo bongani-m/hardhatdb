@@ -288,6 +288,12 @@ func startCluster(store Engine, opts ClusterOptions) (*Group, error) {
 		}
 	}
 
+	if err := replayBinlog(wal, store); err != nil {
+		wal.Close()
+		bolt.Close()
+		closeTransport(transport)
+		return nil, err
+	}
 	fsm := &storeFSM{store: store}
 	r, err := raft.NewRaft(cfg, fsm, wal, bolt, snaps, transport)
 	if err != nil {
@@ -582,8 +588,117 @@ func (c *Group) proposeLoop() {
 		if group == nil {
 			return
 		}
+		group = c.coalesce(group)
 		c.submitGroup(group)
 	}
+}
+
+// coalesce waits up to a millisecond when another statement is still recording,
+// so a burst shares one Raft log fsync. A lone commit finds the lock free and
+// returns immediately.
+func (c *Group) coalesce(group []*queuedCommit) []*queuedCommit {
+	if len(group) == 0 || c.recordMu.TryLock() {
+		if len(group) != 0 {
+			c.recordMu.Unlock()
+		}
+		return group
+	}
+	deadline := time.Now().Add(time.Millisecond)
+	for {
+		if extra := c.drainQueue(); len(extra) > 0 {
+			group = append(group, extra...)
+		}
+		if c.recordMu.TryLock() {
+			c.recordMu.Unlock()
+			if extra := c.drainQueue(); len(extra) > 0 {
+				group = append(group, extra...)
+				if time.Now().Before(deadline) {
+					continue
+				}
+			}
+			return group
+		}
+		if time.Now().After(deadline) {
+			return append(group, c.drainQueue()...)
+		}
+		time.Sleep(50 * time.Microsecond)
+	}
+}
+
+func (c *Group) drainQueue() []*queuedCommit {
+	c.store.Lock()
+	defer c.store.Unlock()
+	if len(c.queue) == 0 {
+		return nil
+	}
+	group := c.queue
+	c.queue = nil
+	for _, q := range group {
+		q.proposed = true
+	}
+	return group
+}
+
+// replayBinlog exports Raft entries that were applied before the binlog worker
+// caught up. Prepare images for a later commit are still in the log because a
+// snapshot waits until the binlog watermark covers that index.
+func replayBinlog(wal *raftWAL, eng Engine) error {
+	mark := eng.BinlogWatermark()
+	last, err := wal.LastIndex()
+	if err != nil || last <= mark {
+		return err
+	}
+	first, err := wal.FirstIndex()
+	if err != nil {
+		return err
+	}
+	if first == 0 {
+		first = 1
+	}
+	prepares := map[string]store.ReplBatch{}
+	for i := first; i <= last; i++ {
+		var lg raft.Log
+		if err := wal.GetLog(i, &lg); err != nil {
+			if errors.Is(err, raft.ErrLogNotFound) {
+				continue
+			}
+			return err
+		}
+		if lg.Type != raft.LogCommand {
+			if i > mark {
+				if err := eng.QueueBinlog(i, store.ReplBatch{}, false, false); err != nil {
+					return err
+				}
+			}
+			continue
+		}
+		batch, err := store.DecodeBatch(lg.Data)
+		if err != nil {
+			return err
+		}
+		if batch.Phase == store.PhasePrepare {
+			prepares[batch.PrepareID] = batch
+		}
+		if i <= mark {
+			continue
+		}
+		switch batch.Phase {
+		case store.PhasePrepare, store.PhaseAbort:
+			if err := eng.QueueBinlog(i, store.ReplBatch{}, false, false); err != nil {
+				return err
+			}
+		case store.PhaseCommit:
+			src := prepares[batch.PrepareID]
+			if err := eng.QueueBinlog(i, src, len(src.Ops) > 0, false); err != nil {
+				return err
+			}
+		default:
+			if err := eng.QueueBinlog(i, batch, true, batch.Rotate); err != nil {
+				return err
+			}
+		}
+	}
+	return eng.FlushBinlog(last)
 }
 
 func (c *Group) takeQueue() []*queuedCommit {
