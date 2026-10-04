@@ -302,6 +302,9 @@ func RecoverTwoPhase(meta *Store, stores []*Store) error {
 }
 
 func (s *Store) savePrepared(index uint64, batch replBatch) error {
+	if batch.ChunkCount > 0 && len(batch.Ops) == 0 {
+		return s.saveStageMeta(index, batch)
+	}
 	raw, err := encodeBatch(batch)
 	if err != nil {
 		return err
@@ -315,17 +318,29 @@ func (s *Store) savePrepared(index uint64, batch replBatch) error {
 }
 
 func (s *Store) dropPrepared(index uint64, id string) error {
-	return s.badgerDB().Update(func(txn *badger.Txn) error {
-		if err := txn.Delete(preparedStorageKey(id)); err != nil && !errors.Is(err, badger.ErrKeyNotFound) {
-			return err
-		}
-		return putApplied(txn, index)
-	})
+	return s.dropStaged(index, id)
 }
 
-// takePrepared applies a prepared batch and removes it. A missing record
-// has already been finished; the Raft index is still recorded.
-func (s *Store) takePrepared(index uint64, id string) (replBatch, error) {
+// takePrepared applies a prepared batch and removes it. Staged chunks are
+// published under the read barrier. A missing record has already been
+// finished; the Raft index is still recorded.
+func (s *Store) takePrepared(index uint64, marker replBatch) (replBatch, error) {
+	id := marker.PrepareID
+	staged, err := s.hasStages(id)
+	if err != nil {
+		return replBatch{}, err
+	}
+	_, haveCur, err := s.readCursor(id)
+	if err != nil {
+		return replBatch{}, err
+	}
+	if staged || haveCur || marker.ChunkCount > 0 {
+		return s.publishStaged(index, marker)
+	}
+	return s.takePreparedBlob(index, id)
+}
+
+func (s *Store) takePreparedBlob(index uint64, id string) (replBatch, error) {
 	var stored replBatch
 	err := s.badgerDB().Update(func(txn *badger.Txn) error {
 		item, err := txn.Get(preparedStorageKey(id))

@@ -31,11 +31,19 @@ func parseComponent(rest []byte) (name []byte, kind byte, n int, ok bool) {
 	return store.ParseComponent(rest)
 }
 
+// beginRead opens a snapshot. It waits out a publish so the snapshot is not
+// taken in the middle of a staged commit.
+func (s *Store) beginRead() *badger.Txn {
+	s.publish.RLock()
+	defer s.publish.RUnlock()
+	return s.badgerDB().NewTransaction(false)
+}
+
 // view runs fn in a read-only transaction.
 func (s *Store) view(fn func(tx *kvTx) error) error {
-	return s.badgerDB().View(func(txn *badger.Txn) error {
-		return fn(&kvTx{txn: txn})
-	})
+	txn := s.beginRead()
+	defer txn.Discard()
+	return fn(&kvTx{txn: txn})
 }
 
 // rowView runs fn against the session snapshot when this is a consistent read.

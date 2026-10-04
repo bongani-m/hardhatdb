@@ -27,8 +27,9 @@ type Engine interface {
 	OnLeadership(isLeader bool)
 	PrivilegeProposed(id uint64) bool
 	SavePrepared(index uint64, batch store.ReplBatch) error
+	SaveStage(index uint64, batch store.ReplBatch) error
 	DropPrepared(index uint64, id string) error
-	TakePrepared(index uint64, id string) (store.ReplBatch, error)
+	TakePrepared(index uint64, marker store.ReplBatch) (store.ReplBatch, error)
 	ApplyOps(index uint64, ops []store.KVOp) error
 	ApplyOpsRun(indexes []uint64, groups [][]store.KVOp) error
 	ReloadPrivileges(batch store.ReplBatch, local bool) error

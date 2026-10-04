@@ -128,6 +128,7 @@ examples/placeshards.sh
 go/performance/stress/run.sh single
 go/performance/stress/run.sh cluster
 go/performance/stress/run.sh mysql
+go/performance/stress/run.sh elyra
 go/performance/stress/run.sh tidb
 go/performance/stress/run.sh ranged
 go/performance/stress/run.sh compare
@@ -136,7 +137,7 @@ go/performance/stress/run.sh failover
 
 `failover` is not part of `compare`. It runs the cluster for 60 seconds with writes aimed at a follower, kills the leader, waits for a new leader, and starts the killed node again. The report splits errors during that election from errors after the new leader is serving. A row inserted before the kill must be readable on every node afterward.
 
-`compare` runs single, cluster, MySQL, TiDB, and the ranged cluster one after another so they do not share the CPU. Each run also prints a text report and stores JSON, CPU samples, and disk usage under `go/performance/stress/results/`.
+`compare` runs single, cluster, MySQL, ElyraSQL, TiDB, and the ranged cluster one after another so they do not share the CPU. Each run also prints a text report and stores JSON, CPU samples, and disk usage under `go/performance/stress/results/`.
 
 Flags after `--` go to the client:
 
@@ -153,13 +154,14 @@ go/performance/stress/run.sh cluster -- -duration 60s -concurrency 32 -seed 2000
 | `-warmup` | `2s` | Unmeasured run before the clock starts. |
 | `-batch` | `100` | Rows per seed `INSERT`. |
 
-The default workload is 8 clients for 20 seconds, 80% reads, after seeding 5000 accounts and 10000 notes. Cluster writes go to the leader and reads go to the followers. MySQL flushes the redo log and the binlog on commit. The single node fsyncs each commit. The cluster also waits for a Raft quorum. TiDB reads and writes go through one SQL server to three TiKV nodes, and a commit waits for two Raft quorums. The ranged target keeps the catalog on a meta group replicated to every node and places each account, with its notes, by key range. A commit waits for that group's quorum.
+The default workload is 8 clients for 20 seconds, 80% reads, after seeding 5000 accounts and 10000 notes. Cluster writes go to the leader and reads go to the followers. MySQL flushes the redo log and the binlog on commit. The single node fsyncs each commit. The cluster also waits for a Raft quorum. ElyraSQL is one process and one file, and a commit is fsynced, with concurrent commits sharing that fsync. A write that conflicts with another transaction's snapshot is an error, in the same column as a MySQL deadlock. TiDB reads and writes go through one SQL server to three TiKV nodes, and a commit waits for two Raft quorums. The ranged target keeps the catalog on a meta group replicated to every node and places each account, with its notes, by key range. A commit waits for that group's quorum.
 
 | Target | Address |
 |--------|---------|
 | single | `127.0.0.1:3316` |
 | cluster | `127.0.0.1:3326`, `3327`, `3328`. Writes go to the current leader. |
 | mysql | `127.0.0.1:3336` |
+| elyra | `127.0.0.1:3356` |
 | tidb | `127.0.0.1:3346` |
 | ranged | `127.0.0.1:3376`–`3381`. Two data groups. Writes for an account go to the group that owns its id. |
 

@@ -130,6 +130,13 @@ func (f *storeFSM) applyDecoded(log *raft.Log, batch store.ReplBatch, decErr err
 	// Decide before noteApplied drops this batch from the leader's in-flight list.
 	local := f.store.PrivilegeProposed(batch.ID)
 	switch batch.Phase {
+	case store.PhaseStage:
+		err := f.store.SaveStage(log.Index, batch)
+		f.note(batch.ID)
+		if err != nil {
+			return err
+		}
+		return f.store.QueueBinlog(log.Index, store.ReplBatch{}, false, false)
 	case store.PhasePrepare:
 		err := f.store.SavePrepared(log.Index, batch)
 		f.note(batch.ID)
@@ -145,7 +152,7 @@ func (f *storeFSM) applyDecoded(log *raft.Log, batch store.ReplBatch, decErr err
 		}
 		return f.store.QueueBinlog(log.Index, store.ReplBatch{}, false, false)
 	case store.PhaseCommit:
-		stored, err := f.store.TakePrepared(log.Index, batch.PrepareID)
+		stored, err := f.store.TakePrepared(log.Index, batch)
 		f.note(batch.ID)
 		if err != nil {
 			return err
@@ -153,8 +160,11 @@ func (f *storeFSM) applyDecoded(log *raft.Log, batch store.ReplBatch, decErr err
 		if err := f.store.ReloadPrivileges(stored, local); err != nil {
 			return err
 		}
-		write := len(stored.Ops) > 0
-		return f.store.QueueBinlog(log.Index, stored, write, false)
+		if stored.Statement == "" {
+			stored.Statement = batch.Statement
+		}
+		write := len(stored.Ops) > 0 || stored.Statement != ""
+		return f.store.QueueBinlog(log.Index, stored, write, batch.Rotate)
 	default:
 		err := f.store.ApplyOps(log.Index, batch.Ops)
 		f.note(batch.ID)

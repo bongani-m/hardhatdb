@@ -1,11 +1,13 @@
 #!/usr/bin/env bash
-# Run the same workload against one hardhatdb node, the three-node cluster, MySQL, or TiDB.
+# Run the same workload against one hardhatdb node, the three-node cluster,
+# MySQL, ElyraSQL, or TiDB.
 #
 # From this repo:
 #
 #   go/performance/stress/run.sh single
 #   go/performance/stress/run.sh cluster
 #   go/performance/stress/run.sh mysql
+#   go/performance/stress/run.sh elyra
 #   go/performance/stress/run.sh tidb
 #   go/performance/stress/run.sh ranged
 #   go/performance/stress/run.sh compare
@@ -22,7 +24,7 @@
 #
 #   docker compose -f go/performance/stress/compose.yaml -p hardhatdb-stress down -v
 #
-# Ports: single 3316, cluster 3326 3327 3328, MySQL 3336, TiDB 3346, ranged 3376-3381.
+# Ports: single 3316, cluster 3326 3327 3328, MySQL 3336, ElyraSQL 3356, TiDB 3346, ranged 3376-3381.
 # The cluster client writes to whichever node is the Raft leader.
 # User root, password stress, database stress.
 # Every target serves TLS. The script creates stress/certs on first use.
@@ -76,12 +78,12 @@ fi
 extra=("$@")
 
 usage() {
-	echo "usage: $0 single|cluster|mysql|tidb|ranged|compare|failover [-- stress flags]" >&2
+	echo "usage: $0 single|cluster|mysql|elyra|tidb|ranged|compare|failover [-- stress flags]" >&2
 	exit 2
 }
 
 case "$target" in
-single | cluster | mysql | tidb | ranged | compare | failover) ;;
+single | cluster | mysql | elyra | tidb | ranged | compare | failover) ;;
 *) usage ;;
 esac
 
@@ -106,7 +108,7 @@ build_image() {
 up() {
 	profile=$1
 	case "$profile" in
-	mysql | tidb)
+	mysql | elyra | tidb)
 		"${compose[@]}" --profile "$profile" up -d
 		;;
 	*)
@@ -175,6 +177,7 @@ containers_for() {
 	cluster | failover) echo hardhatdb-stress-n1-1 hardhatdb-stress-n2-1 hardhatdb-stress-n3-1 ;;
 	ranged) echo hardhatdb-stress-r1-1 hardhatdb-stress-r2-1 hardhatdb-stress-r3-1 hardhatdb-stress-r4-1 hardhatdb-stress-r5-1 hardhatdb-stress-r6-1 ;;
 	mysql) echo hardhatdb-stress-mysql-1 ;;
+	elyra) echo hardhatdb-stress-elyra-1 ;;
 	tidb) echo hardhatdb-stress-pd-1 hardhatdb-stress-tikv1-1 hardhatdb-stress-tikv2-1 hardhatdb-stress-tikv3-1 hardhatdb-stress-tidb-1 ;;
 	*) return 1 ;;
 	esac
@@ -191,6 +194,7 @@ disk_containers_for() {
 disk_path_for() {
 	case "$1" in
 	mysql) echo /var/lib/mysql ;;
+	elyra) echo /var/lib/elyrasql ;;
 	*) echo /data ;;
 	esac
 }
@@ -229,9 +233,15 @@ write_disk() {
 	: >"$out"
 	local c bytes
 	for c in "${cs[@]}"; do
-		bytes=$(docker exec "$c" du -sb "$path" 2>/dev/null | awk 'NR==1 {print $1}')
+		# A missing du exits 127, and Docker prints that on stdout. The
+		# assignment must not abort, and a non-numeric line is not a size.
+		# The ElyraSQL image is scratch and has no du.
+		bytes=$(docker exec "$c" du -sb "$path" 2>/dev/null | awk 'NR==1 && $1 ~ /^[0-9]+$/ {print $1}' || true)
 		if [[ -z "$bytes" ]]; then
-			bytes=$(docker exec "$c" du -sk "$path" | awk 'NR==1 {print $1 * 1024}')
+			bytes=$(docker exec "$c" du -sk "$path" 2>/dev/null | awk 'NR==1 && $1 ~ /^[0-9]+$/ {print $1 * 1024}' || true)
+		fi
+		if [[ -z "$bytes" ]]; then
+			bytes=$(docker run --rm --volumes-from "$c" alpine:3.21 du -sk "$path" 2>/dev/null | awk 'NR==1 && $1 ~ /^[0-9]+$/ {print $1 * 1024}' || true)
 		fi
 		if [[ -z "$bytes" ]]; then
 			echo "could not measure disk usage of $c:$path" >&2
@@ -263,6 +273,9 @@ run_target() {
 		;;
 	mysql)
 		run_client mysql -write 127.0.0.1:3336 -tls-ca "$tls_ca" -json "$json" | tee -a "$log"
+		;;
+	elyra)
+		run_client elyra -write 127.0.0.1:3356 -tls-ca "$tls_ca" -json "$json" | tee -a "$log"
 		;;
 	tidb)
 		run_client tidb -write 127.0.0.1:3346 -tls-ca "$tls_ca" -json "$json" | tee -a "$log"
@@ -549,7 +562,7 @@ run_failover() {
 if [[ "$target" == compare ]]; then
 	summary=$dir/last-compare.txt
 	: >"$summary"
-	for name in single cluster mysql tidb ranged; do
+	for name in single cluster mysql elyra tidb ranged; do
 		echo "======== $name ========" | tee -a "$summary"
 		run_target "$name"
 	done

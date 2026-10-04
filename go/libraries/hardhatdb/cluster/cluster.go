@@ -21,6 +21,10 @@ import (
 	raftboltdb "github.com/hashicorp/raft-boltdb"
 )
 
+func init() {
+	store.EntryLimit = raft.SuggestedMaxDataSize
+}
+
 // pendingCap is how many recorded batches may wait for Raft at once.
 // Past that, commit waits until an apply frees a slot.
 const pendingCap = 32
@@ -183,7 +187,13 @@ type Group struct {
 	cond     *sync.Cond
 	inflight []*queuedCommit
 	queue    []*queuedCommit
-	nextID   uint64
+	// staging ids have chunks in flight or applied and no marker yet.
+	// Orphan recovery skips them.
+	staging map[string]struct{}
+	// proposeHook, if set, runs before each entry is sent. A non-nil error
+	// fails that entry and every later one in the group. Tests use it.
+	proposeHook func(store.ReplBatch) error
+	nextID      uint64
 	stopped  bool
 	exited   chan struct{}
 	groupID  string
@@ -316,6 +326,7 @@ func startCluster(store Engine, opts ClusterOptions) (*Group, error) {
 		advertise:    opts.Advertise,
 		exited:       make(chan struct{}),
 		nextID:       newBatchEpoch(),
+		staging:      map[string]struct{}{},
 		bootstrapped: bootstrapped,
 		groupID:      opts.GroupID,
 	}
@@ -504,6 +515,103 @@ func (c *Group) CommitMarked(statement, gtid string, mode store.Marked, record f
 	return <-done
 }
 
+// CommitEmitted records a statement that may propose more than one Raft entry.
+// emit may block until an in-flight slot is free. The caller waits until the
+// last entry has been applied. On failure, entries still queued are dropped
+// and a staged transaction is aborted.
+func (c *Group) CommitEmitted(record func(snap []store.KVOp, emit func(store.ReplBatch) error) error) error {
+	c.recordMu.Lock()
+	snap, err := c.beginRecord()
+	if err != nil {
+		c.recordMu.Unlock()
+		return err
+	}
+	var first uint64
+	var last chan error
+	var stageID string
+	emit := func(batch store.ReplBatch) error {
+		if batch.Phase == store.PhaseStage {
+			stageID = batch.PrepareID
+		}
+		done, err := c.enqueue(batch)
+		if err != nil {
+			return err
+		}
+		if first == 0 {
+			first = batch.ID
+		}
+		last = done
+		return nil
+	}
+	err = record(snap, emit)
+	c.recordMu.Unlock()
+	if err != nil {
+		if first != 0 {
+			c.abandonFrom(first, err, nil)
+		}
+		if stageID != "" {
+			if abortErr := c.proposeAbort(stageID); abortErr != nil {
+				c.clearStaging(stageID)
+			}
+		}
+		return err
+	}
+	if last == nil {
+		return nil
+	}
+	err = <-last
+	if err != nil && stageID != "" {
+		if abortErr := c.proposeAbort(stageID); abortErr != nil {
+			c.clearStaging(stageID)
+		}
+	}
+	return err
+}
+
+// proposeAbort writes a marker that drops staged chunks for id.
+func (c *Group) proposeAbort(id string) error {
+	done, err := c.enqueue(store.ReplBatch{Phase: store.PhaseAbort, PrepareID: id})
+	if err != nil {
+		return err
+	}
+	return <-done
+}
+
+func (c *Group) clearStaging(id string) {
+	if id == "" {
+		return
+	}
+	c.store.Lock()
+	delete(c.staging, id)
+	c.store.Unlock()
+}
+
+// StageActive reports that this leader is still committing id.
+func (c *Group) StageActive(id string) bool {
+	if c == nil || id == "" {
+		return false
+	}
+	c.store.Lock()
+	defer c.store.Unlock()
+	_, ok := c.staging[id]
+	return ok
+}
+
+// SetProposeHook installs a test hook that can fail one entry before it is sent.
+func (c *Group) SetProposeHook(fn func(store.ReplBatch) error) { c.proposeHook = fn }
+
+// ReadBatch decodes the Raft command at index. Tests use it.
+func (c *Group) ReadBatch(index uint64) (store.ReplBatch, error) {
+	var lg raft.Log
+	if err := c.wal.GetLog(index, &lg); err != nil {
+		return store.ReplBatch{}, err
+	}
+	if lg.Type != raft.LogCommand {
+		return store.ReplBatch{}, fmt.Errorf("hardhatdb: log %d is not a command", index)
+	}
+	return store.DecodeBatch(lg.Data)
+}
+
 // SetGate installs a test hook that runs on the proposer before each batch is sent.
 func (c *Group) SetGate(fn func()) { c.gate = fn }
 
@@ -536,14 +644,14 @@ func (c *Group) InFlight(id uint64) bool {
 func snapshotOps(pending []*queuedCommit) []store.KVOp {
 	n := 0
 	for _, q := range pending {
-		if q.batch.Phase != store.PhaseApply {
+		if q.batch.Phase != store.PhaseApply && q.batch.Phase != store.PhaseStage {
 			continue
 		}
 		n += len(q.batch.Ops)
 	}
 	ops := make([]store.KVOp, 0, n)
 	for _, q := range pending {
-		if q.batch.Phase != store.PhaseApply {
+		if q.batch.Phase != store.PhaseApply && q.batch.Phase != store.PhaseStage {
 			continue
 		}
 		ops = append(ops, q.batch.Ops...)
@@ -555,11 +663,17 @@ func snapshotOps(pending []*queuedCommit) []store.KVOp {
 func (c *Group) enqueue(batch store.ReplBatch) (chan error, error) {
 	c.store.Lock()
 	defer c.store.Unlock()
-	if c.stopped {
-		return nil, errClusterClosed
-	}
-	if c.raft.State() != raft.Leader {
-		return nil, c.notLeader()
+	for {
+		if c.stopped {
+			return nil, errClusterClosed
+		}
+		if c.raft.State() != raft.Leader {
+			return nil, c.notLeader()
+		}
+		if len(c.inflight) < pendingCap {
+			break
+		}
+		c.cond.Wait()
 	}
 	c.nextID++
 	if c.nextID == 0 {
@@ -570,6 +684,9 @@ func (c *Group) enqueue(batch store.ReplBatch) (chan error, error) {
 		id:    batch.ID,
 		batch: batch,
 		done:  make(chan error, 1),
+	}
+	if batch.Phase == store.PhaseStage && batch.PrepareID != "" {
+		c.staging[batch.PrepareID] = struct{}{}
 	}
 	c.inflight = append(c.inflight, q)
 	c.queue = append(c.queue, q)
@@ -656,6 +773,7 @@ func replayBinlog(wal *raftWAL, eng Engine) error {
 		first = 1
 	}
 	prepares := map[string]store.ReplBatch{}
+	staged := map[string][]store.KVOp{}
 	for i := first; i <= last; i++ {
 		var lg raft.Log
 		if err := wal.GetLog(i, &lg); err != nil {
@@ -676,20 +794,34 @@ func replayBinlog(wal *raftWAL, eng Engine) error {
 		if err != nil {
 			return err
 		}
-		if batch.Phase == store.PhasePrepare {
-			prepares[batch.PrepareID] = batch
+		switch batch.Phase {
+		case store.PhaseStage:
+			staged[batch.PrepareID] = append(staged[batch.PrepareID], batch.Ops...)
+		case store.PhasePrepare:
+			if batch.ChunkCount == 0 {
+				prepares[batch.PrepareID] = batch
+			}
+		case store.PhaseAbort:
+			delete(staged, batch.PrepareID)
+			delete(prepares, batch.PrepareID)
 		}
 		if i <= mark {
 			continue
 		}
 		switch batch.Phase {
-		case store.PhasePrepare, store.PhaseAbort:
+		case store.PhaseStage, store.PhasePrepare, store.PhaseAbort:
 			if err := eng.QueueBinlog(i, store.ReplBatch{}, false, false); err != nil {
 				return err
 			}
 		case store.PhaseCommit:
 			src := prepares[batch.PrepareID]
-			if err := eng.QueueBinlog(i, src, len(src.Ops) > 0, false); err != nil {
+			if ops := staged[batch.PrepareID]; len(ops) > 0 {
+				src = batch
+				src.Ops = ops
+				delete(staged, batch.PrepareID)
+			}
+			write := len(src.Ops) > 0 || src.Statement != ""
+			if err := eng.QueueBinlog(i, src, write, batch.Rotate); err != nil {
 				return err
 			}
 		default:
@@ -731,6 +863,12 @@ func (c *Group) submitGroup(group []*queuedCommit) {
 	}
 	futures := make([]raft.ApplyFuture, len(group))
 	for i, q := range group {
+		if c.proposeHook != nil {
+			if err := c.proposeHook(q.batch); err != nil {
+				go c.finishProposed(group, futures, i, err)
+				return
+			}
+		}
 		payload, err := store.EncodeBatch(q.batch)
 		if err != nil {
 			go c.finishProposed(group, futures, i, err)
@@ -864,6 +1002,14 @@ func (c *Group) noteApplied(id uint64) {
 	for i, q := range c.inflight {
 		if q.id != id {
 			continue
+		}
+		switch q.batch.Phase {
+		case store.PhaseCommit, store.PhaseAbort:
+			delete(c.staging, q.batch.PrepareID)
+		case store.PhasePrepare:
+			if q.batch.ChunkCount > 0 {
+				delete(c.staging, q.batch.PrepareID)
+			}
 		}
 		copy(c.inflight[i:], c.inflight[i+1:])
 		c.inflight[len(c.inflight)-1] = nil

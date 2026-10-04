@@ -6,6 +6,7 @@ import (
 
 	"github.com/bongani-m/hardhatdb/go/store"
 	"github.com/dgraph-io/badger/v4"
+	"github.com/google/uuid"
 )
 
 // errReplicate aborts the Badger transaction that computed a commit. The
@@ -23,6 +24,7 @@ const (
 	phasePrepare = store.PhasePrepare
 	phaseCommit  = store.PhaseCommit
 	phaseAbort   = store.PhaseAbort
+	phaseStage   = store.PhaseStage
 )
 
 // recordingTxn copies every Set and Delete while the real transaction still
@@ -31,8 +33,11 @@ type recordingTxn struct {
 	*badger.Txn
 	ops []kvOp
 	// idx is the latest op for each key this statement wrote. Those keys win
-	// over the in-flight overlay.
+	// over the in-flight overlay. Keys already sealed into an earlier chunk
+	// are removed so iterators read them from the overlay.
 	idx map[string]int
+	// before runs before a write is recorded. It spills a full chunk.
+	before func(kvOp) error
 }
 
 func (t *recordingTxn) note(op kvOp) {
@@ -55,18 +60,36 @@ func (t *recordingTxn) lookup(key []byte) (kvOp, bool) {
 }
 
 func (t *recordingTxn) Set(key, val []byte) error {
-	t.note(kvOp{
+	op := kvOp{
 		Key:   append([]byte(nil), key...),
 		Value: append([]byte(nil), val...),
-	})
+	}
+	if t.before != nil {
+		if err := t.before(op); err != nil {
+			return err
+		}
+	}
+	t.note(op)
+	if t.Txn == nil {
+		return nil
+	}
 	return t.Txn.Set(key, val)
 }
 
 func (t *recordingTxn) Delete(key []byte) error {
-	t.note(kvOp{
+	op := kvOp{
 		Key:    append([]byte(nil), key...),
 		Delete: true,
-	})
+	}
+	if t.before != nil {
+		if err := t.before(op); err != nil {
+			return err
+		}
+	}
+	t.note(op)
+	if t.Txn == nil {
+		return nil
+	}
 	return t.Txn.Delete(key)
 }
 
@@ -137,16 +160,24 @@ func (s *Store) commit(statement string, fn func(tx *kvTx) error) error {
 // A transaction that only asks to rotate the binlog is replicated too.
 func (s *Store) commitGTID(statement, gtid string, fn func(tx *kvTx) error) error {
 	if s.group == nil {
-		s.mu.Lock()
-		defer s.mu.Unlock()
-		var rotate bool
-		err := s.badgerDB().Update(func(txn *badger.Txn) error {
-			tx := &kvTx{txn: txn}
-			if err := fn(tx); err != nil {
-				return err
-			}
-			rotate = tx.rotate
-			return putSourceGTID(tx, gtid)
+		return s.commitLocal(statement, gtid, fn)
+	}
+	return s.commitMarked(statement, gtid, marked{}, fn)
+}
+
+func (s *Store) commitLocal(statement, gtid string, fn func(tx *kvTx) error) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	ops, rotate, err := s.capture(nil, gtid, fn, nil)
+	if err != nil {
+		return err
+	}
+	if len(ops) == 0 && !rotate {
+		return nil
+	}
+	if s.oneEntry(ops, "") {
+		err = s.badgerDB().Update(func(txn *badger.Txn) error {
+			return applyOpsTxn(txn, ops)
 		})
 		if err != nil {
 			return err
@@ -156,45 +187,251 @@ func (s *Store) commitGTID(statement, gtid string, fn func(tx *kvTx) error) erro
 		}
 		return nil
 	}
-	return s.commitMarked(statement, gtid, marked{}, fn)
+	id := uuid.NewString()
+	parts := store.ChunkOps(ops, store.EntryLimit, id)
+	for i, part := range parts {
+		if err := s.saveStage(0, replBatch{
+			Ops:       part,
+			Unix:      uint32(time.Now().Unix()),
+			Phase:     phaseStage,
+			PrepareID: id,
+			Chunk:     uint64(i),
+		}); err != nil {
+			_ = s.dropStaged(0, id)
+			return err
+		}
+	}
+	_, err = s.publishStaged(0, replBatch{
+		Statement:  statement,
+		Unix:       uint32(time.Now().Unix()),
+		Rotate:     rotate,
+		Phase:      phaseCommit,
+		PrepareID:  id,
+		ChunkCount: uint64(len(parts)),
+	})
+	if err != nil {
+		return err
+	}
+	if rotate {
+		return s.rotateBinlog()
+	}
+	return nil
 }
 
 func (s *Store) commitMarked(statement, gtid string, mode marked, fn func(tx *kvTx) error) error {
-	return s.group.CommitMarked(statement, gtid, mode, func(snap []kvOp) (replBatch, bool, error) {
-		rec := &recordingTxn{}
-		overlay := newKVOverlay(snap)
-		var rotate bool
-		err := s.badgerDB().Update(func(txn *badger.Txn) error {
-			rec.Txn = txn
-			tx := &kvTx{txn: rec, overlay: overlay}
-			if err := fn(tx); err != nil {
-				return err
-			}
-			if err := putSourceGTID(tx, gtid); err != nil {
-				return err
-			}
-			rotate = tx.rotate
-			if len(rec.ops) == 0 && !rotate && mode.Phase == phaseApply {
-				return nil
-			}
-			return errReplicate
-		})
-		if err != nil && !errors.Is(err, errReplicate) {
-			return replBatch{}, false, err
+	return s.group.CommitEmitted(func(snap []kvOp, emit func(replBatch) error) error {
+		return s.emitRecorded(statement, gtid, mode, snap, emit, fn)
+	})
+}
+
+// emitRecorded records fn and proposes either one entry or staged chunks
+// plus a marker. spill hands each sealed chunk to emit so Raft can replicate
+// it before the rest of the statement is recorded.
+func (s *Store) emitRecorded(statement, gtid string, mode marked, snap []kvOp, emit func(replBatch) error, fn func(tx *kvTx) error) error {
+	id := mode.PrepareID
+	var seq uint64
+	ops, rotate, err := s.capture(snap, gtid, fn, func(part []kvOp) error {
+		if id == "" {
+			id = uuid.NewString()
 		}
-		if !errors.Is(err, errReplicate) {
-			return replBatch{}, false, nil
-		}
-		return replBatch{
-			Ops:       rec.ops,
-			Statement: statement,
+		err := emit(replBatch{
+			Ops:       part,
 			Unix:      uint32(time.Now().Unix()),
+			Phase:     phaseStage,
+			PrepareID: id,
+			Chunk:     seq,
+		})
+		seq++
+		return err
+	})
+	if err != nil {
+		return err
+	}
+	if seq == 0 && len(ops) == 0 && !rotate && mode.Phase == phaseApply {
+		return nil
+	}
+	unix := uint32(time.Now().Unix())
+	if seq == 0 {
+		return emit(replBatch{
+			Ops:       ops,
+			Statement: statement,
+			Unix:      unix,
 			Rotate:    rotate,
 			Phase:     mode.Phase,
 			PrepareID: mode.PrepareID,
 			CommitNo:  mode.CommitNo,
-		}, true, nil
+		})
+	}
+	if len(ops) > 0 {
+		if id == "" {
+			id = uuid.NewString()
+		}
+		if err := emit(replBatch{
+			Ops:       ops,
+			Unix:      unix,
+			Phase:     phaseStage,
+			PrepareID: id,
+			Chunk:     seq,
+		}); err != nil {
+			return err
+		}
+		seq++
+	}
+	phase := phaseCommit
+	if mode.Phase == phasePrepare {
+		phase = phasePrepare
+	}
+	text := statement
+	if store.StagedLen(nil, id)+len(text) > entryLimit() {
+		text = ""
+	}
+	return emit(replBatch{
+		Statement:  text,
+		Unix:       unix,
+		Rotate:     rotate,
+		Phase:      phase,
+		PrepareID:  id,
+		CommitNo:   mode.CommitNo,
+		ChunkCount: seq,
 	})
+}
+
+// capture runs fn against discarded Badger transactions. When the open
+// transaction would pass the Raft or Badger budget, those ops are sealed into
+// the overlay and, if spill is set, handed off. The returned ops are the
+// unsealed tail when spill is set, and every op when it is not.
+func (s *Store) capture(snap []kvOp, gtid string, fn func(tx *kvTx) error, spill func([]kvOp) error) ([]kvOp, bool, error) {
+	overlay := newKVOverlay(snap)
+	if overlay == nil {
+		overlay = &kvOverlay{}
+	}
+	rec := &recordingTxn{idx: map[string]int{}}
+	var held bool
+	release := func() {
+		if rec.Txn != nil {
+			rec.Txn.Discard()
+			rec.Txn = nil
+		}
+		if held {
+			s.publish.RUnlock()
+			held = false
+		}
+	}
+	defer release()
+	open := func() error {
+		if rec.Txn != nil {
+			return nil
+		}
+		s.publish.RLock()
+		held = true
+		rec.Txn = s.badgerDB().NewTransaction(true)
+		return nil
+	}
+	if err := open(); err != nil {
+		return nil, false, err
+	}
+	txnOps := 0
+	txnWire := 0
+	limit := entryLimit()
+	rec.before = func(op kvOp) error {
+		add := store.OpWire(op)
+		if txnOps > 0 && (stagedBytes(txnOps+1, txnWire+add) > limit || s.txnFull(txnOps, txnWire)) {
+			part := append([]kvOp(nil), rec.ops[len(rec.ops)-txnOps:]...)
+			sealOps(overlay, rec, part)
+			release()
+			if spill != nil {
+				if err := spill(part); err != nil {
+					return err
+				}
+			}
+			if err := open(); err != nil {
+				return err
+			}
+			txnOps = 0
+			txnWire = 0
+		}
+		txnWire += add
+		txnOps++
+		return nil
+	}
+	tx := &kvTx{txn: rec, overlay: overlay}
+	if err := fn(tx); err != nil {
+		return nil, false, err
+	}
+	if err := putSourceGTID(tx, gtid); err != nil {
+		return nil, false, err
+	}
+	rotate := tx.rotate
+	var tail []kvOp
+	if spill == nil {
+		tail = append([]kvOp(nil), rec.ops...)
+	} else if txnOps > 0 {
+		tail = append([]kvOp(nil), rec.ops[len(rec.ops)-txnOps:]...)
+	}
+	release()
+	return tail, rotate, nil
+}
+
+func sealOps(overlay *kvOverlay, rec *recordingTxn, part []kvOp) {
+	if overlay.byKey == nil {
+		overlay.byKey = make(map[string]kvOp, len(part))
+	}
+	for _, op := range part {
+		overlay.byKey[string(op.Key)] = op
+		delete(rec.idx, string(op.Key))
+	}
+}
+
+func stagedBytes(n, wire int) int {
+	return store.StagedLen(nil, "stage") - 1 + uvarintLen(uint64(n)) + wire
+}
+
+func (s *Store) txnFull(ops, wire int) bool {
+	db := s.badgerDB()
+	if db == nil {
+		return false
+	}
+	if int64(ops+1) >= db.MaxBatchCount() {
+		return true
+	}
+	return int64(wire) >= db.MaxBatchSize()*8/10
+}
+
+func uvarintLen(n uint64) int {
+	l := 1
+	for n >= 0x80 {
+		n >>= 7
+		l++
+	}
+	return l
+}
+
+func entryLimit() int {
+	if store.EntryLimit > 0 {
+		return store.EntryLimit
+	}
+	return 512 * 1024
+}
+
+func (s *Store) oneEntry(ops []kvOp, id string) bool {
+	if store.StagedLen(ops, id) > entryLimit() {
+		return false
+	}
+	db := s.badgerDB()
+	if db == nil {
+		return true
+	}
+	if int64(len(ops)) >= db.MaxBatchCount() {
+		return false
+	}
+	var size int64
+	for _, op := range ops {
+		size += int64(len(op.Key) + len(op.Value) + len(op.Before) + len(op.Schema) + 32)
+		if size >= db.MaxBatchSize() {
+			return false
+		}
+	}
+	return true
 }
 
 func putSourceGTID(tx *kvTx, gtid string) error {

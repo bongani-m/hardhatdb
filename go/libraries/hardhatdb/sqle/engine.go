@@ -35,6 +35,8 @@ type raftNode interface {
 	Shutdown() error
 	NodeID() string
 	CommitMarked(statement, gtid string, mode marked, record func(snap []kvOp) (replBatch, bool, error)) error
+	CommitEmitted(record func(snap []kvOp, emit func(replBatch) error) error) error
+	StageActive(id string) bool
 	InFlight(id uint64) bool
 	Voters() ([]store.Peer, error)
 	LeaderForwardAddr() (string, error)
@@ -130,12 +132,16 @@ func (s *Store) SavePrepared(index uint64, batch store.ReplBatch) error {
 	return s.savePrepared(index, batch)
 }
 
+func (s *Store) SaveStage(index uint64, batch store.ReplBatch) error {
+	return s.saveStage(index, batch)
+}
+
 func (s *Store) DropPrepared(index uint64, id string) error {
 	return s.dropPrepared(index, id)
 }
 
-func (s *Store) TakePrepared(index uint64, id string) (store.ReplBatch, error) {
-	return s.takePrepared(index, id)
+func (s *Store) TakePrepared(index uint64, marker store.ReplBatch) (store.ReplBatch, error) {
+	return s.takePrepared(index, marker)
 }
 
 func (s *Store) ApplyOps(index uint64, ops []store.KVOp) error {
@@ -209,6 +215,9 @@ func (s *Store) WaitReady(timeout time.Duration) error {
 }
 
 func (s *Store) WaitCaughtUp(timeout time.Duration) error {
+	if s.group == nil {
+		return nil
+	}
 	return s.group.WaitCaughtUp(timeout)
 }
 

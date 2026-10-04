@@ -4,6 +4,7 @@
 #   single      127.0.0.1:3316
 #   cluster     127.0.0.1:3326, 3327, and 3328. Writes go to the current leader.
 #   mysql       127.0.0.1:3336
+#   elyra       127.0.0.1:3356
 #   tidb        127.0.0.1:3346
 #   ranged      127.0.0.1:3376-3381. Two data groups of three voters, placed by key range.
 #
@@ -12,6 +13,8 @@
 # The cluster also waits for a Raft quorum before a write returns.
 # TiDB reads and writes go through one SQL server to three TiKV nodes.
 # A committed write waits for two Raft quorums, prewrite then commit.
+# ElyraSQL is one process and one file. The default durability fsyncs each
+# group commit. The image is scratch, so it has no shell.
 #
 # Every server requires TLS. The hardhatdb account is caching_sha2_password,
 # and that plugin is refused on a plaintext TCP connection. MySQL uses the
@@ -23,6 +26,7 @@
 #   docker compose -f go/performance/stress/compose.yaml --profile single up -d --build
 #   docker compose -f go/performance/stress/compose.yaml --profile cluster up -d --build
 #   docker compose -f go/performance/stress/compose.yaml --profile mysql up -d
+#   docker compose -f go/performance/stress/compose.yaml --profile elyra up -d
 #   docker compose -f go/performance/stress/compose.yaml --profile tidb up -d
 #   docker compose -f go/performance/stress/compose.yaml --profile ranged up -d --build
 #
@@ -150,6 +154,20 @@ services:
       - "3336:3306"
     volumes:
       - mysql:/var/lib/mysql
+      - *certs
+
+  elyra:
+    profiles: ["elyra"]
+    image: ghcr.io/kwhorne/elyrasql:1.12.0
+    environment:
+      ELYRASQL_USER: root
+      ELYRASQL_PASSWORD: stress
+      ELYRASQL_TLS_CERT: /certs/server.crt
+      ELYRASQL_TLS_KEY: /certs/server.key
+    ports:
+      - "3356:3307"
+    volumes:
+      - elyra:/var/lib/elyrasql
       - *certs
 
   pd:
@@ -474,6 +492,7 @@ volumes:
   cn2:
   cn3:
   mysql:
+  elyra:
   tidb-pd:
   tidb-kv1:
   tidb-kv2:

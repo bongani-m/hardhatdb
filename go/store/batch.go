@@ -12,7 +12,15 @@ import (
 // process do not start with it; DecodeBatch falls back to gob when it is absent.
 const batchMagic byte = 0xA5
 
-const batchVersion byte = 1
+const (
+	batchVersion1 byte = 1
+	batchVersion2 byte = 2
+)
+
+// EntryLimit is the largest encoded Raft command this process will propose.
+// HashiCorp suggests 512 KiB; larger entries can delay heartbeats. Tests may
+// lower it to force a commit to split.
+var EntryLimit = 512 * 1024
 
 func init() {
 	gob.RegisterName("github.com/bongani-m/hardhatdb.kvOp", KVOp{})
@@ -72,6 +80,11 @@ type ReplBatch struct {
 	Phase     byte
 	PrepareID string
 	CommitNo  uint64
+	// Chunk is the zero-based sequence of a staged piece of one transaction.
+	Chunk uint64
+	// ChunkCount is set on the marker that follows staged pieces. It is the
+	// number of those pieces. Zero means this entry is not a chunked marker.
+	ChunkCount uint64
 }
 
 const (
@@ -79,6 +92,8 @@ const (
 	PhasePrepare byte = 1
 	PhaseCommit  byte = 2
 	PhaseAbort   byte = 3
+	// PhaseStage stores one piece of a transaction without publishing it.
+	PhaseStage byte = 4
 )
 
 // Marked is how a Raft batch should be applied. The zero value is a normal commit.
@@ -91,7 +106,11 @@ type Marked struct {
 // EncodeBatch serializes a Raft log entry in the compact form.
 func EncodeBatch(batch ReplBatch) ([]byte, error) {
 	buf := make([]byte, 0, 64+len(batch.Statement))
-	buf = append(buf, batchMagic, batchVersion)
+	ver := batchVersion1
+	if batch.Chunk != 0 || batch.ChunkCount != 0 {
+		ver = batchVersion2
+	}
+	buf = append(buf, batchMagic, ver)
 	var err error
 	buf, err = appendOps(buf, batch.Ops)
 	if err != nil {
@@ -112,6 +131,10 @@ func EncodeBatch(batch ReplBatch) ([]byte, error) {
 	buf = append(buf, batch.Phase)
 	buf = appendString(buf, batch.PrepareID)
 	buf = binary.AppendUvarint(buf, batch.CommitNo)
+	if ver == batchVersion2 {
+		buf = binary.AppendUvarint(buf, batch.Chunk)
+		buf = binary.AppendUvarint(buf, batch.ChunkCount)
+	}
 	return buf, nil
 }
 
@@ -127,8 +150,9 @@ func DecodeBatch(raw []byte) (ReplBatch, error) {
 }
 
 func decodeCompact(raw []byte) (ReplBatch, error) {
-	if raw[1] != batchVersion {
-		return ReplBatch{}, fmt.Errorf("hardhatdb: batch version %d", raw[1])
+	ver := raw[1]
+	if ver != batchVersion1 && ver != batchVersion2 {
+		return ReplBatch{}, fmt.Errorf("hardhatdb: batch version %d", ver)
 	}
 	r := bytes.NewReader(raw[2:])
 	var batch ReplBatch
@@ -171,7 +195,87 @@ func decodeCompact(raw []byte) (ReplBatch, error) {
 	if err != nil {
 		return ReplBatch{}, err
 	}
+	if ver == batchVersion2 {
+		batch.Chunk, err = binary.ReadUvarint(r)
+		if err != nil {
+			return ReplBatch{}, err
+		}
+		batch.ChunkCount, err = binary.ReadUvarint(r)
+		if err != nil {
+			return ReplBatch{}, err
+		}
+	}
 	return batch, nil
+}
+
+// ChunkOps splits ops so each piece encodes within limit when stored as a
+// staged entry for id. A single op that is already over the limit is its own
+// piece. limit <= 0 uses EntryLimit.
+func ChunkOps(ops []KVOp, limit int, id string) [][]KVOp {
+	if len(ops) == 0 {
+		return nil
+	}
+	if limit <= 0 {
+		limit = EntryLimit
+	}
+	var out [][]KVOp
+	var cur []KVOp
+	wire := 0
+	for _, op := range ops {
+		add := oneOpLen(op)
+		if len(cur) > 0 && stagedLen(id, len(cur)+1, wire+add) > limit {
+			out = append(out, cur)
+			cur = nil
+			wire = 0
+		}
+		cur = append(cur, op)
+		wire += add
+	}
+	if len(cur) > 0 {
+		out = append(out, cur)
+	}
+	return out
+}
+
+// StagedLen reports the encoded size of a staged entry with these ops.
+func StagedLen(ops []KVOp, id string) int {
+	wire := 0
+	for _, op := range ops {
+		wire += oneOpLen(op)
+	}
+	return stagedLen(id, len(ops), wire)
+}
+
+func stagedLen(id string, n, wire int) int {
+	// emptyStageLen includes the one-byte count of zero ops.
+	return emptyStageLen(id) - 1 + uvarintLen(uint64(n)) + wire
+}
+
+func emptyStageLen(id string) int {
+	raw, err := EncodeBatch(ReplBatch{
+		Phase:     PhaseStage,
+		PrepareID: id,
+		// A wide uvarint keeps the estimate above every real chunk number.
+		Chunk: 1 << 62,
+	})
+	if err != nil {
+		return 64 + len(id)
+	}
+	return len(raw)
+}
+
+// OpWire is the encoded size of one key/value operation, without the batch header.
+func OpWire(op KVOp) int {
+	return oneOpLen(op)
+}
+
+func oneOpLen(op KVOp) int {
+	buf, _ := appendOps(nil, []KVOp{op})
+	return len(buf) - uvarintLen(1)
+}
+
+func uvarintLen(n uint64) int {
+	return len(binary.AppendUvarint(nil, n))
 }
 
 func appendOps(dst []byte, ops []KVOp) ([]byte, error) {

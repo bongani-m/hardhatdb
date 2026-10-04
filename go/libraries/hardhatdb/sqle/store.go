@@ -78,6 +78,9 @@ type Store struct {
 	autoMu     sync.Mutex
 	autoRanges map[tableRef]autoRange
 	autoEpoch  uint64
+	// publish is held for writing while staged chunks become user keys, and
+	// for reading while a snapshot is opened, so a reader never sees a prefix.
+	publish sync.RWMutex
 }
 
 var _ sql.DatabaseProvider = (*Store)(nil)
@@ -110,6 +113,10 @@ func OpenWithOptions(path string, opts OpenOptions) (*Store, error) {
 	db.StartGC()
 	s := &Store{data: db}
 	if err := s.migrateDecisions(); err != nil {
+		_ = db.Close()
+		return nil, err
+	}
+	if err := s.recoverStages(); err != nil {
 		_ = db.Close()
 		return nil, err
 	}
@@ -813,7 +820,6 @@ func (s *Store) truncate(t *Table) (int, error) {
 	})
 	return n, err
 }
-
 func (s *Store) migrateTable(dbName, tableName string) error {
 	return s.update(func(tx *kvTx) error {
 		bucket := tableBucket(tx, dbName, tableName)

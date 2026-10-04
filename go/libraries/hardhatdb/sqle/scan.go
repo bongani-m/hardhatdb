@@ -277,7 +277,7 @@ func (s *Store) mergeRows(ctx context.Context, t *Table, edits []edit, span keyS
 }
 
 func (s *Store) readTx() (*kvTx, func()) {
-	txn := s.badgerDB().NewTransaction(false)
+	txn := s.beginRead()
 	return &kvTx{txn: txn}, func() { txn.Discard() }
 }
 

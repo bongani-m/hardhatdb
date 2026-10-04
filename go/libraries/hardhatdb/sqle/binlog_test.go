@@ -8,6 +8,7 @@ import (
 	"github.com/dolthub/vitess/go/mysql"
 	"github.com/stretchr/testify/require"
 
+	"github.com/bongani-m/hardhatdb/go/store"
 	"github.com/dolthub/go-mysql-server/sql"
 	"github.com/dolthub/go-mysql-server/sql/types"
 )
@@ -188,4 +189,35 @@ func requireGroupedWrite(t *testing.T, b *binlog, events []mysql.BinlogEvent, ma
 	require.Equal(t, maps, mapCount)
 	require.Equal(t, maps, writeCount)
 	require.Equal(t, rows, rowCount)
+}
+
+func TestBinlogSplitsLargeRowGroup(t *testing.T) {
+	old := store.EntryLimit
+	store.EntryLimit = 1
+	t.Cleanup(func() { store.EntryLimit = old })
+
+	ctx := sql.NewContext(context.Background())
+	sch := sql.NewPrimaryKeySchema(sql.Schema{
+		{Name: "id", Type: types.Int64, Nullable: false, PrimaryKey: true, Source: "t"},
+	})
+	rawSchema, err := encodeSchema(ctx, sch, sql.Collation_Default, "")
+	require.NoError(t, err)
+	first, err := encodeRow(ctx, sch.Schema, sql.NewRow(int64(1)))
+	require.NoError(t, err)
+	second, err := encodeRow(ctx, sch.Schema, sql.NewRow(int64(2)))
+	require.NoError(t, err)
+	third, err := encodeRow(ctx, sch.Schema, sql.NewRow(int64(3)))
+	require.NoError(t, err)
+	batch := replBatch{Unix: 1, Rows: []rowChange{
+		{Database: "db", Table: "t", Schema: rawSchema, Op: int(opInsert), After: first},
+		{Database: "db", Table: "t", Op: int(opInsert), After: second},
+		{Database: "db", Table: "t", Op: int(opInsert), After: third},
+	}}
+	b, err := openBinlog(t.TempDir(), testServerUUID, 0)
+	require.NoError(t, err)
+	defer b.close()
+	events, err := b.build(1, batch)
+	require.NoError(t, err)
+	requireGroupedWrite(t, b, events, 3, 3)
+	require.True(t, events[len(events)-1].IsXID())
 }

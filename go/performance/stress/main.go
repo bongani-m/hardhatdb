@@ -1,6 +1,6 @@
 // Stress-tests a MySQL-protocol server with one small-site workload.
 //
-// The same binary talks to a single HardhatDB node, a Raft cluster, or MySQL.
+// The same binary talks to a single HardhatDB node, a Raft cluster, MySQL, or ElyraSQL.
 // Writes go to -write. Reads go to -read (comma-separated). On a cluster,
 // point -write at the leader and -read at the followers.
 //
@@ -298,7 +298,11 @@ func openDB(ctx context.Context, addr, user, password, dbName string, conns int,
 		ReadTimeout:          time.Minute,
 		WriteTimeout:         time.Minute,
 		AllowNativePasswords: true,
-		Params:               map[string]string{"charset": "utf8mb4"},
+		// The driver's usual 64 MiB cap. Leaving this at zero makes the driver
+		// ask for @@max_allowed_packet. ElyraSQL answers that in the binary
+		// integer encoding, which this driver reads as text.
+		MaxAllowedPacket: 64 << 20,
+		Params:           map[string]string{"charset": "utf8mb4"},
 	}
 	if tlsOn {
 		cfg.TLSConfig = "stress"

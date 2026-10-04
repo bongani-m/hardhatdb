@@ -111,6 +111,18 @@ func (s *Store) onLeadership(isLeader bool) {
 		return
 	}
 	s.kickReplica()
+	if s.group == nil {
+		return
+	}
+	go func() {
+		if err := s.WaitCaughtUp(30 * time.Second); err != nil {
+			return
+		}
+		if !s.IsLeader() {
+			return
+		}
+		_ = s.abortOrphanStages()
+	}()
 }
 
 // EnableUpstream follows host while this node is the primary. Every node in

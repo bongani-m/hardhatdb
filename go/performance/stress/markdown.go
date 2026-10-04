@@ -54,11 +54,13 @@ func summaryMarkdown(reps []rendered) string {
 	b.WriteString("Cluster writes go to the leader and reads go to the followers. ")
 	b.WriteString("MySQL flushes the redo log and the binlog on commit. The single node fsyncs each commit. The cluster also waits for a Raft quorum. ")
 	b.WriteString("TiDB reads and writes go through one SQL server to a three-node TiKV group. A commit waits for two Raft quorums. ")
+	b.WriteString("ElyraSQL is one process and one file. A commit is fsynced, and concurrent commits share that fsync. A write that conflicts with another transaction's snapshot is counted as an error. ")
 	b.WriteString("The ranged target keeps the catalog on a meta group replicated to every node and places each account, with its notes, by key range: ids below the midpoint stay on the first group and the rest stay on the second. A commit waits for that group's quorum. Each node stores the catalog plus one group, so the rows are three copies spread over six nodes, with two write leaders.\n\n")
 	if anyUsage(reps) {
 		b.WriteString("CPU and memory are sampled about once a second while the client runs, including seed and warmup. ")
 		b.WriteString("100% CPU is one core. A cluster figure is the sum of its nodes. ")
 		b.WriteString("Disk is the data directory after the run: `/data` on a hardhatdb node (Badger plus the Raft log) and `/var/lib/mysql` on MySQL. ")
+		b.WriteString("ElyraSQL disk is `/var/lib/elyrasql`, measured from another container because that image has no shell. ")
 		b.WriteString("TiDB disk is the sum of the TiKV data directories.\n\n")
 	}
 

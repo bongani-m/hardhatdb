@@ -603,9 +603,50 @@ func fillRowSchema(schemas map[string][]byte, change rowChange) (rowChange, erro
 	return change, nil
 }
 
-// rowGroupEvents emits one table map and one rows event for consecutive
-// edits of the same table and operation.
+// rowGroupEvents emits table map and rows events for consecutive edits of
+// the same table and operation. A large group is split so each rows event
+// stays within the Raft entry budget, and the caller emits one XID after.
 func (b *binlog) rowGroupEvents(tableID uint64, group []rowChange, meta mysql.BinlogEventMetadata) ([]mysql.BinlogEvent, error) {
+	parts := splitRowChanges(group, entryLimit())
+	if len(parts) == 1 {
+		return b.writeRowGroup(tableID, group, meta)
+	}
+	var events []mysql.BinlogEvent
+	for _, part := range parts {
+		ev, err := b.writeRowGroup(tableID, part, meta)
+		if err != nil {
+			return nil, err
+		}
+		events = append(events, ev...)
+	}
+	return events, nil
+}
+
+func splitRowChanges(group []rowChange, limit int) [][]rowChange {
+	if limit <= 0 || len(group) <= 1 {
+		return [][]rowChange{group}
+	}
+	var parts [][]rowChange
+	var cur []rowChange
+	size := 0
+	for _, change := range group {
+		n := len(change.Before) + len(change.After) + len(change.Schema) + 64
+		if len(cur) > 0 && size+n > limit {
+			parts = append(parts, cur)
+			cur = nil
+			size = 0
+		}
+		cur = append(cur, change)
+		size += n
+	}
+	if len(cur) > 0 {
+		parts = append(parts, cur)
+	}
+	return parts
+}
+
+// writeRowGroup emits one table map and one rows event.
+func (b *binlog) writeRowGroup(tableID uint64, group []rowChange, meta mysql.BinlogEventMetadata) ([]mysql.BinlogEvent, error) {
 	head := group[0]
 	tableMeta, err := decodeSchema(head.Schema, head.Database, head.Table)
 	if err != nil {

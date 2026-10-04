@@ -124,7 +124,7 @@ func (s *Session) StartTransaction(ctx *sql.Context, characteristic sql.Transact
 	s.mu.Unlock()
 	if iso != isoReadCommitted && iso != isoReadUncommitted {
 		s.mu.Lock()
-		s.snap = s.store.badgerDB().NewTransaction(false)
+		s.snap = s.store.beginRead()
 		s.mu.Unlock()
 	}
 	return &transaction{readOnly: readOnly}, nil
@@ -554,7 +554,7 @@ func (s *Session) refreshSnapshot() {
 		return
 	}
 	old := s.snap
-	s.snap = s.store.badgerDB().NewTransaction(false)
+	s.snap = s.store.beginRead()
 	used := false
 	for _, cur := range s.iters {
 		if cur.txn == old {
